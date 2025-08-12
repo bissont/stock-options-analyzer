@@ -1,13 +1,10 @@
 {
-  "functions": {
-    "server/index.js": {
-      "maxDuration": 30
-    }
-  },
+  "buildCommand": "cd client && npm install && npm run build",
+  "outputDirectory": "client/dist",
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/server/index.js"
+      "destination": "/api/index.js"
     }
   ]
 }
