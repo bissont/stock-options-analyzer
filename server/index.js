@@ -194,7 +194,7 @@ app.get('/api/options/:symbol', async (req, res) => {
   }
 });
 
-// Get call options for current and next week (2.5-15% OTM only)
+// Get call options for current and next 4 weeks (any OTM up to 10%)
 app.get('/api/options-weeks/:symbol', async (req, res) => {
   const symbol = toUpperNoSpaces(req.params.symbol);
   if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
@@ -210,20 +210,44 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
     const expirations = base?.expirationDates || [];
     if (!expirations.length) return res.status(404).json({ error: 'No expirations available' });
 
-    const nowMs = Date.now();
+    // Sort all expirations chronologically
+    const sortedExpirations = expirations.sort((a, b) => a.getTime() - b.getTime());
+    
+    // Get current date (start of today)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Find expirations for the next 4 weeks
+    const targets = [];
     const oneWeekMs = 7 * 24 * 3600 * 1000;
-    const withinWeek = expirations.filter((d) => d.getTime() >= nowMs && d.getTime() <= nowMs + oneWeekMs);
-    const currentTarget = withinWeek.length
-      ? new Date(Math.min(...withinWeek.map((d) => d.getTime())))
-      : new Date(Math.min(...expirations.map((d) => d.getTime())));
-
-    // Next week target: the soonest expiration strictly after currentTarget
-    const afterCurrent = expirations
-      .map((d) => d.getTime())
-      .filter((t) => t > currentTarget.getTime());
-    const nextTarget = afterCurrent.length ? new Date(Math.min(...afterCurrent)) : null;
-
-    const targets = [currentTarget].concat(nextTarget ? [nextTarget] : []);
+    
+    for (let week = 0; week < 4; week++) {
+      const weekStart = new Date(today.getTime() + (week * oneWeekMs));
+      const weekEnd = new Date(today.getTime() + ((week + 1) * oneWeekMs));
+      
+      // Find the closest expiration within this week, or the next available one
+      let weekTarget = sortedExpirations.find(exp => 
+        exp.getTime() >= weekStart.getTime() && exp.getTime() < weekEnd.getTime()
+      );
+      
+      // If no expiration in this exact week, find the next closest future expiration
+      if (!weekTarget) {
+        weekTarget = sortedExpirations.find(exp => exp.getTime() >= weekStart.getTime());
+      }
+      
+      // Add unique targets only
+      if (weekTarget && !targets.some(t => t.getTime() === weekTarget.getTime())) {
+        targets.push(weekTarget);
+      }
+    }
+    
+    // Ensure we have at least one target (fallback to nearest future expiration)
+    if (targets.length === 0) {
+      const futureExpirations = sortedExpirations.filter(exp => exp.getTime() >= today.getTime());
+      if (futureExpirations.length > 0) {
+        targets.push(futureExpirations[0]);
+      }
+    }
 
     // Calculate OTM range (any OTM up to 10% above current price)
     const otmLow = currentPrice * 1.001;  // Just above current price (any OTM)

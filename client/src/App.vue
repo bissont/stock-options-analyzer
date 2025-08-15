@@ -15,6 +15,11 @@ function addLog(message) {
   if (logs.value.length > 20) logs.value.shift() // Keep only last 20 logs
 }
 
+function getWeekLabel(index) {
+  const labels = ['This Week', 'Next Week', 'Week 3', 'Week 4']
+  return labels[index] || `Week ${index + 1}`
+}
+
 async function fetchData() {
   error.value = ''
   loading.value = true
@@ -98,7 +103,7 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
         <p><strong>OTM Range:</strong> ${{ weeklyOptions.otmRange?.low?.toFixed(2) }} - ${{ weeklyOptions.otmRange?.high?.toFixed(2) }}</p>
       </div>
       <div v-for="(exp, index) in weeklyOptions.expirations" :key="exp.expiration" class="expiration-section">
-        <h3>{{ index === 0 ? 'This Week' : 'Next Week' }} — {{ new Date(exp.expiration * 1000).toLocaleDateString() }}</h3>
+        <h3>{{ getWeekLabel(index) }} — {{ new Date(exp.expiration * 1000).toLocaleDateString() }}</h3>
         <div v-if="exp.bestOption" class="best-option-alert">
           🎯 <strong>Best Option:</strong> ${{ exp.bestOption.strike }} strike - ${{ exp.bestOption.premium }} premium 
           ({{ exp.bestOption.returnPercent }}% return) with {{ exp.bestOption.assignmentProbability }}% assignment probability
