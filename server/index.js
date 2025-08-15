@@ -213,40 +213,22 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
     // Sort all expirations chronologically
     const sortedExpirations = expirations.sort((a, b) => a.getTime() - b.getTime());
     
-    // Get current date (start of today)
+    // Get current date (start of today)  
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    // Find expirations for the next 4 weeks
+    // Find the next 4 unique future expiration dates (including today if options expire today)
     const targets = [];
-    const oneWeekMs = 7 * 24 * 3600 * 1000;
+    const futureExpirations = sortedExpirations.filter(exp => exp.getTime() >= today.getTime());
     
-    for (let week = 0; week < 4; week++) {
-      const weekStart = new Date(today.getTime() + (week * oneWeekMs));
-      const weekEnd = new Date(today.getTime() + ((week + 1) * oneWeekMs));
-      
-      // Find the closest expiration within this week, or the next available one
-      let weekTarget = sortedExpirations.find(exp => 
-        exp.getTime() >= weekStart.getTime() && exp.getTime() < weekEnd.getTime()
-      );
-      
-      // If no expiration in this exact week, find the next closest future expiration
-      if (!weekTarget) {
-        weekTarget = sortedExpirations.find(exp => exp.getTime() >= weekStart.getTime());
-      }
-      
-      // Add unique targets only
-      if (weekTarget && !targets.some(t => t.getTime() === weekTarget.getTime())) {
-        targets.push(weekTarget);
-      }
+    // Take the first 4 future expirations
+    for (let i = 0; i < Math.min(4, futureExpirations.length); i++) {
+      targets.push(futureExpirations[i]);
     }
     
-    // Ensure we have at least one target (fallback to nearest future expiration)
-    if (targets.length === 0) {
-      const futureExpirations = sortedExpirations.filter(exp => exp.getTime() >= today.getTime());
-      if (futureExpirations.length > 0) {
-        targets.push(futureExpirations[0]);
-      }
+    // Fallback: if no future expirations, take the latest available ones
+    if (targets.length === 0 && sortedExpirations.length > 0) {
+      targets.push(sortedExpirations[sortedExpirations.length - 1]);
     }
 
     // Calculate OTM range (any OTM up to 10% above current price)
