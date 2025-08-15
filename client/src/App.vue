@@ -78,7 +78,7 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
 
 <template>
   <div class="container">
-    <h1>Stock + Options</h1>
+    <h1>Tim's App</h1>
     <form @submit.prevent="fetchData" class="form">
       <input v-model="symbol" placeholder="Ticker (e.g. AAPL)" />
       <button type="submit" :disabled="loading">{{ loading ? 'Loading…' : 'Fetch' }}</button>
