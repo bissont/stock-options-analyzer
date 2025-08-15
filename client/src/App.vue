@@ -7,13 +7,6 @@ const error = ref('')
 const quote = ref(null)
 const options = ref(null)
 const weeklyOptions = ref(null)
-const logs = ref([])
-
-function addLog(message) {
-  const timestamp = new Date().toLocaleTimeString()
-  logs.value.push(`[${timestamp}] ${message}`)
-  if (logs.value.length > 20) logs.value.shift() // Keep only last 20 logs
-}
 
 function getWeekLabel(index) {
   const labels = ['This Week', 'Next Week', 'Week 3', 'Week 4']
@@ -28,47 +21,33 @@ async function fetchData() {
   weeklyOptions.value = null
   const sym = symbol.value.trim()
   
-  addLog(`Starting fetch for symbol: ${sym}`)
-  
   if (!sym) {
     error.value = 'Enter a symbol'
     loading.value = false
-    addLog('Error: No symbol entered')
     return
   }
   
   try {
-    addLog('Making requests to /api/quote and /api/options-weeks')
     const [qRes, woRes] = await Promise.all([
       fetch(`/api/quote/${encodeURIComponent(sym)}`),
       fetch(`/api/options-weeks/${encodeURIComponent(sym)}`),
     ])
     
-    addLog(`Quote response status: ${qRes.status}`)
-    addLog(`Weekly options response status: ${woRes.status}`)
-    
     if (!qRes.ok) {
-      const qError = await qRes.text()
-      addLog(`Quote error response: ${qError}`)
       throw new Error('Failed to load quote')
     }
     
     if (!woRes.ok) {
-      const woError = await woRes.text()
-      addLog(`Weekly options error response: ${woError}`)
       throw new Error('Failed to load weekly options')
     }
     
     quote.value = await qRes.json()
     weeklyOptions.value = await woRes.json()
     
-    addLog(`Successfully loaded data. Weekly options count: ${weeklyOptions.value?.expirations?.length || 0}`)
   } catch (e) {
     error.value = e?.message || 'Request failed'
-    addLog(`Error: ${e?.message || 'Request failed'}`)
   } finally {
     loading.value = false
-    addLog('Fetch completed')
   }
 }
 
@@ -135,14 +114,6 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
         </table>
       </div>
     </section>
-
-    <section class="card debug-logs">
-      <h3>Debug Logs</h3>
-      <div class="logs">
-        <div v-for="(log, index) in logs" :key="index" class="log-entry">{{ log }}</div>
-        <div v-if="logs.length === 0" class="no-logs">No logs yet. Try fetching data.</div>
-      </div>
-    </section>
   </div>
   
 </template>
@@ -176,10 +147,5 @@ h3 { margin: 0.25rem 0 0.5rem; }
 .warning-alert { background: #fef3c7; border: 2px solid #f59e0b; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; color: #92400e; }
 .best-option { background: #fef3c7 !important; border-left: 4px solid #f59e0b; }
 .meets-target { background: #f0fdf4; border-left: 2px solid #22c55e; }
-.debug-logs { background: #f8f9fa; }
-.logs { max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; }
-.log-entry { padding: 0.2rem 0; border-bottom: 1px solid #eee; }
-.log-entry:last-child { border-bottom: none; }
-.no-logs { color: #666; font-style: italic; text-align: center; padding: 1rem; }
 @media (max-width: 800px) { .grid {grid-template-columns: repeat(2,1fr);} .columns { grid-template-columns: 1fr; } .otm-info { gap: 1rem; } }
 </style>
