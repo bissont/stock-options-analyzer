@@ -85,7 +85,7 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
         <h3>{{ getWeekLabel(index) }} — {{ new Date(exp.expiration * 1000).toLocaleDateString() }}</h3>
         <div v-if="exp.bestOption" class="best-option-alert">
           🎯 <strong>Best Option:</strong> ${{ exp.bestOption.strike }} strike - ${{ exp.bestOption.premium }} premium 
-          ({{ exp.bestOption.returnPercent }}% return) with {{ exp.bestOption.assignmentProbability }}% assignment probability
+          ({{ exp.bestOption.returnPercent }}% return) with {{ exp.bestOption.assignmentProbabilityEnhanced }}% enhanced assignment probability
           <div class="explanation">{{ exp.bestOptionReason }}</div>
         </div>
         <div v-if="!exp.hasQualifyingOptions && exp.calls.length > 0" class="warning-alert">
@@ -95,7 +95,7 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
         <table v-else>
           <thead>
             <tr>
-              <th>Strike</th><th>OTM %</th><th>Premium</th><th>Return %</th><th>Assignment %</th><th>Return/Risk</th><th>Score</th><th>Volume</th>
+              <th>Strike</th><th>OTM %</th><th>Premium</th><th>Return %</th><th>Assignment % (BS)</th><th>Assignment % (Enhanced)</th><th>Return/Risk</th><th>Score</th><th>Volume</th>
             </tr>
           </thead>
           <tbody>
@@ -106,6 +106,7 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
               <td>${{ call.premium }}</td>
               <td>{{ call.returnPercent }}%</td>
               <td>{{ call.assignmentProbability }}%</td>
+              <td>{{ call.assignmentProbabilityEnhanced }}%</td>
               <td>{{ call.returnAssignmentRatio }}</td>
               <td>{{ call.goalScore }}</td>
               <td>{{ call.volume || 0 }}</td>
