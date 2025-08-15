@@ -89,7 +89,7 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
           <div class="explanation">{{ exp.bestOptionReason }}</div>
         </div>
         <div v-if="!exp.hasQualifyingOptions && exp.calls.length > 0" class="warning-alert">
-          ⚠️ No options meet your 0.25% weekly or 0.5% bi-weekly return targets. Showing highest returns available.
+          ⚠️ No options meet your 0.1% weekly or 0.2% bi-weekly return targets. Showing highest returns available.
         </div>
         <div v-if="exp.calls.length === 0" class="no-options">No call options in OTM range</div>
         <table v-else>

@@ -114,9 +114,9 @@ function calculateAssignmentProbability(currentPrice, strikePrice, timeToExpiry,
 }
 
 function calculateGoalBasedScore(premium, assignmentProbability, strike, currentPrice, daysToExpiry) {
-  // Target: 0.25% weekly return or 0.5% bi-weekly return
-  const weeklyTarget = 0.0025; // 0.25%
-  const biweeklyTarget = 0.005; // 0.5%
+  // Target: 0.1% weekly return or 0.2% bi-weekly return
+  const weeklyTarget = 0.001; // 0.1%
+  const biweeklyTarget = 0.002; // 0.2%
   
   // Calculate return as percentage of stock price (for cash-secured puts or covered calls)
   const returnPercent = premium / currentPrice;
@@ -292,8 +292,8 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
         
         // Weekly vs bi-weekly target check  
         const weeklyReturn = premium > 0 ? (premium / currentPrice) * 100 : 0;
-        const meetsWeeklyTarget = daysToExpiry <= 8 && weeklyReturn >= 0.25;
-        const meetsBiweeklyTarget = daysToExpiry <= 16 && weeklyReturn >= 0.5;
+        const meetsWeeklyTarget = daysToExpiry <= 8 && weeklyReturn >= 0.1;
+        const meetsBiweeklyTarget = daysToExpiry <= 16 && weeklyReturn >= 0.2;
         const meetsTarget = meetsWeeklyTarget || meetsBiweeklyTarget;
         const targetType = meetsWeeklyTarget ? 'weekly' : (meetsBiweeklyTarget ? 'bi-weekly' : 'none');
         
