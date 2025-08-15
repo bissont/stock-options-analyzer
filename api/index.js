@@ -38,8 +38,29 @@ function normalCDF(x) {
   return 0.5 * (1.0 + sign * y);
 }
 
-function calculateAssignmentProbability(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility) {
-  if (timeToExpiry <= 0) return strikePrice <= currentPrice ? 1 : 0;
+function calculateDelta(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, optionType = 'call') {
+  if (timeToExpiry <= 0) return optionType === 'call' ? (currentPrice > strikePrice ? 1 : 0) : (currentPrice < strikePrice ? -1 : 0);
+  
+  const S = currentPrice;
+  const K = strikePrice;
+  const T = timeToExpiry;
+  const r = riskFreeRate;
+  const sigma = volatility;
+  
+  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+  
+  if (optionType === 'call') {
+    return normalCDF(d1);
+  } else {
+    return normalCDF(d1) - 1;
+  }
+}
+
+function calculateAssignmentProbability(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, marketDelta = null) {
+  if (timeToExpiry <= 0) return { 
+    original: strikePrice <= currentPrice ? 1 : 0,
+    enhanced: strikePrice <= currentPrice ? 1 : 0
+  };
   
   const S = currentPrice;
   const K = strikePrice;
@@ -50,8 +71,46 @@ function calculateAssignmentProbability(currentPrice, strikePrice, timeToExpiry,
   const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
   const d2 = d1 - sigma * Math.sqrt(T);
   
-  // N(d2) approximates probability of finishing ITM
-  return normalCDF(d2);
+  // Original Black-Scholes probability
+  const originalProb = normalCDF(d2);
+  
+  // Enhanced probability with market corrections
+  let enhancedProb = originalProb;
+  
+  // 1. Delta-based probability adjustment (if market delta is available)
+  if (marketDelta !== null && marketDelta !== undefined) {
+    // For calls: delta approximates ITM probability
+    const deltaProb = Math.abs(marketDelta);
+    // Weighted combination: 70% BS, 30% market delta
+    enhancedProb = (originalProb * 0.7) + (deltaProb * 0.3);
+  }
+  
+  // 2. Implied volatility adjustment
+  const defaultVol = 0.25; // 25% baseline volatility
+  const volAdjustment = Math.min(2.0, Math.max(0.5, sigma / defaultVol)); // Cap between 0.5x and 2x
+  enhancedProb = enhancedProb * volAdjustment;
+  
+  // 3. Time decay acceleration for very short-term options
+  if (T < (7/365)) { // Less than 1 week
+    const timeAcceleration = 1 + (0.1 * (7/365 - T) / (7/365)); // Up to 10% increase
+    enhancedProb = enhancedProb * timeAcceleration;
+  }
+  
+  // 4. Moneyness adjustment
+  const moneyness = S / K;
+  if (moneyness > 1.05) { // More than 5% ITM
+    enhancedProb = enhancedProb * 1.1; // Increase probability
+  } else if (moneyness > 0.95 && moneyness <= 1.05) { // Near the money
+    enhancedProb = enhancedProb * 1.05; // Slight increase
+  }
+  
+  // Ensure probability stays between 0 and 1
+  enhancedProb = Math.max(0, Math.min(1, enhancedProb));
+  
+  return {
+    original: originalProb,
+    enhanced: enhancedProb
+  };
 }
 
 function calculateGoalBasedScore(premium, assignmentProbability, strike, currentPrice, daysToExpiry) {
@@ -206,21 +265,30 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
         const riskFreeRate = 0.045; // Approximate current 10-year treasury rate
         const volatility = o.impliedVolatility || 0.25; // Use option's IV or default to 25%
         
-        const assignmentProb = calculateAssignmentProbability(
+        // Calculate theoretical delta for market comparison
+        const theoreticalDelta = calculateDelta(currentPrice, o.strike, timeToExpiry, riskFreeRate, volatility, 'call');
+        
+        // Get assignment probabilities (both original and enhanced)
+        const assignmentProbs = calculateAssignmentProbability(
           currentPrice, 
           o.strike, 
           timeToExpiry, 
           riskFreeRate, 
-          volatility
+          volatility,
+          theoreticalDelta // Use calculated delta as market delta approximation
         );
         
         const premium = (o.bid && o.ask) ? (o.bid + o.ask) / 2 : (o.lastPrice || 0); // Midpoint or last price
         const returnPercent = premium > 0 ? ((premium / currentPrice) * 100).toFixed(3) : '0.000'; // Return as % of stock price
-        const goalScore = calculateGoalBasedScore(premium, assignmentProb * 100, o.strike, currentPrice, daysToExpiry);
         
-        // Calculate return/assignment ratio for all options
-        const returnAssignmentRatio = premium > 0 && assignmentProb > 0 ? 
-          (((premium / currentPrice) * 100) / (assignmentProb * 100)).toFixed(3) : 'N/A';
+        // Use enhanced probability for goal scoring
+        const goalScore = calculateGoalBasedScore(premium, assignmentProbs.enhanced * 100, o.strike, currentPrice, daysToExpiry);
+        
+        // Calculate return/assignment ratio for both methods
+        const originalRatio = premium > 0 && assignmentProbs.original > 0 ? 
+          (((premium / currentPrice) * 100) / (assignmentProbs.original * 100)).toFixed(3) : 'N/A';
+        const enhancedRatio = premium > 0 && assignmentProbs.enhanced > 0 ? 
+          (((premium / currentPrice) * 100) / (assignmentProbs.enhanced * 100)).toFixed(3) : 'N/A';
         
         // Weekly vs bi-weekly target check  
         const weeklyReturn = premium > 0 ? (premium / currentPrice) * 100 : 0;
@@ -242,11 +310,14 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
           impliedVolatility: o.impliedVolatility,
           inTheMoney: o.inTheMoney,
           otmPercent: ((o.strike - currentPrice) / currentPrice * 100).toFixed(2),
-          assignmentProbability: (assignmentProb * 100).toFixed(1),
+          assignmentProbability: (assignmentProbs.original * 100).toFixed(1), // Original BS probability
+          assignmentProbabilityEnhanced: (assignmentProbs.enhanced * 100).toFixed(1), // Enhanced probability
+          delta: (theoreticalDelta * 100).toFixed(1), // Theoretical delta
           premium: premium.toFixed(2),
           returnPercent: returnPercent,
-          goalScore: goalScore > 0 ? goalScore.toFixed(3) : returnAssignmentRatio,
-          returnAssignmentRatio: returnAssignmentRatio,
+          goalScore: goalScore > 0 ? goalScore.toFixed(3) : enhancedRatio,
+          returnAssignmentRatio: originalRatio, // Original ratio
+          returnAssignmentRatioEnhanced: enhancedRatio, // Enhanced ratio
           meetsTarget: meetsTarget,
           targetType: targetType,
           daysToExpiry: Math.round(daysToExpiry)
