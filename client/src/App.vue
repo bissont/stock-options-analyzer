@@ -7,6 +7,8 @@ const error = ref('')
 const quote = ref(null)
 const options = ref(null)
 const weeklyOptions = ref(null)
+const rfAnalysis = ref(null)
+const showAdvanced = ref(false)
 
 function getWeekLabel(index) {
   const labels = ['This Week', 'Next Week', 'Week 3', 'Week 4']
@@ -19,6 +21,7 @@ async function fetchData() {
   quote.value = null
   options.value = null
   weeklyOptions.value = null
+  rfAnalysis.value = null
   const sym = symbol.value.trim()
   
   if (!sym) {
@@ -51,16 +54,45 @@ async function fetchData() {
   }
 }
 
+async function runRFAnalysis() {
+  if (!symbol.value.trim()) {
+    error.value = 'Enter a symbol first'
+    return
+  }
+  
+  loading.value = true
+  error.value = ''
+  
+  try {
+    const response = await fetch(`/api/analyze-rf/${encodeURIComponent(symbol.value.trim())}`)
+    
+    if (!response.ok) {
+      throw new Error('Failed to run RF analysis')
+    }
+    
+    rfAnalysis.value = await response.json()
+    showAdvanced.value = true
+    
+  } catch (e) {
+    error.value = e?.message || 'RF analysis failed'
+  } finally {
+    loading.value = false
+  }
+}
+
 const sortedCalls = computed(() => (options.value?.calls || []).slice().sort((a,b)=>a.strike-b.strike))
 const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)=>a.strike-b.strike))
 </script>
 
 <template>
   <div class="container">
-    <h1>Tim's App</h1>
+    <h1>Tim's Options Analyzer</h1>
     <form @submit.prevent="fetchData" class="form">
       <input v-model="symbol" placeholder="Ticker (e.g. AAPL)" />
-      <button type="submit" :disabled="loading">{{ loading ? 'Loading…' : 'Fetch' }}</button>
+      <button type="submit" :disabled="loading">{{ loading ? 'Loading…' : 'Fetch Basic' }}</button>
+      <button type="button" @click="runRFAnalysis" :disabled="loading" class="rf-button">
+        {{ loading ? 'Analyzing…' : '🤖 Run RF Analysis' }}
+      </button>
     </form>
 
     <p v-if="error" class="error">{{ error }}</p>
@@ -115,6 +147,61 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
         </table>
       </div>
     </section>
+
+    <section v-if="rfAnalysis" class="card rf-analysis">
+      <h2>🤖 Random Forest Analysis for {{ rfAnalysis.symbol }}</h2>
+      <div class="rf-stats">
+        <div><strong>Current Price:</strong> ${{ rfAnalysis.currentPrice?.toFixed(2) }}</div>
+        <div><strong>Model Accuracy:</strong> R² = {{ rfAnalysis.modelStats?.r2?.toFixed(4) }}, MAE = {{ rfAnalysis.modelStats?.mae?.toFixed(4) }}</div>
+        <div><strong>OTM Range:</strong> ${{ rfAnalysis.otmRange?.low?.toFixed(2) }} - ${{ rfAnalysis.otmRange?.high?.toFixed(2) }}</div>
+      </div>
+      
+      <div v-for="(week, index) in rfAnalysis.weeksData" :key="week.expiration" class="rf-week-section">
+        <h3>{{ getWeekLabel(index) }} — {{ new Date(week.expiration).toLocaleDateString() }}</h3>
+        
+        <div v-if="week.bestOption" class="best-rf-alert">
+          🎯 <strong>RF Best Option:</strong> ${{ week.bestOption.strike }} @ ${{ week.bestOption.premium }} 
+          | {{ week.bestOption.returnPercent }}% return (~{{ week.bestOption.annualYield }}%/yr)
+          | RF Probability: {{ week.bestOption.rfProbability }}% 
+          | Final Probability: {{ week.bestOption.finalProbability }}%
+          | OTM {{ week.bestOption.otmPercent }}%
+        </div>
+        
+        <div v-if="week.options.length === 0" class="no-options">No qualifying RF options found</div>
+        
+        <table v-else class="rf-table">
+          <thead>
+            <tr>
+              <th>Strike</th>
+              <th>OTM %</th>
+              <th>Premium</th>
+              <th>Return %</th>
+              <th>Annual Yield %</th>
+              <th>BS Prob %</th>
+              <th>RF Prob %</th>
+              <th>Final Prob %</th>
+              <th>OI</th>
+              <th>Volume</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="option in week.options" :key="option.strike" 
+                :class="{ 'rf-best': week.bestOption && option.strike === week.bestOption.strike }">
+              <td>${{ option.strike }}</td>
+              <td>{{ option.otmPercent }}%</td>
+              <td>${{ option.premium }}</td>
+              <td>{{ option.returnPercent }}%</td>
+              <td>{{ option.annualYield }}%</td>
+              <td>{{ option.bsProbability }}%</td>
+              <td>{{ option.rfProbability }}%</td>
+              <td>{{ option.finalProbability }}%</td>
+              <td>{{ option.openInterest?.toLocaleString() || 'N/A' }}</td>
+              <td>{{ option.volume?.toLocaleString() || 0 }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </div>
   
 </template>
@@ -128,6 +215,7 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
 .form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
 input { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid #ddd; border-radius: 6px; }
 button { padding: 0.5rem 0.75rem; border: 1px solid #4f46e5; background: #4f46e5; color: white; border-radius: 6px; cursor: pointer; }
+.rf-button { background: #059669; border-color: #059669; margin-left: 0.5rem; }
 .error { color: #b91c1c; margin: 0.5rem 0; }
 .card { border: 1px solid #eee; border-radius: 10px; padding: 1rem; margin-top: 1rem; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
 .grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 0.5rem; }
@@ -149,4 +237,11 @@ h3 { margin: 0.25rem 0 0.5rem; }
 .best-option { background: #fef3c7 !important; border-left: 4px solid #f59e0b; }
 .meets-target { background: #f0fdf4; border-left: 2px solid #22c55e; }
 @media (max-width: 800px) { .grid {grid-template-columns: repeat(2,1fr);} .columns { grid-template-columns: 1fr; } .otm-info { gap: 1rem; } }
+.rf-analysis { border-left: 4px solid #059669; }
+.rf-stats { display: flex; gap: 2rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.rf-stats > div { margin: 0; }
+.rf-week-section { margin-bottom: 2rem; }
+.best-rf-alert { background: #ecfdf5; border: 2px solid #059669; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; color: #047857; }
+.rf-table { margin-top: 1rem; }
+.rf-best { background: #ecfdf5 !important; border-left: 4px solid #059669; }
 </style>

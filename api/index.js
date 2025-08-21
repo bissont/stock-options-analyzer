@@ -360,5 +360,362 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
   }
 });
 
+// Random Forest Analysis Implementation
+const trainedModels = {};
+
+class SimpleRandomForest {
+  constructor(nTrees = 120, maxDepth = 10, minSamplesSplit = 5) {
+    this.nTrees = nTrees;
+    this.maxDepth = maxDepth;
+    this.minSamplesSplit = minSamplesSplit;
+    this.trees = [];
+    this.issTrained = false;
+  }
+
+  // Simple decision tree node
+  static createNode(samples, targets, depth, maxDepth, minSamplesSplit) {
+    if (depth >= maxDepth || samples.length < minSamplesSplit) {
+      return { prediction: targets.reduce((a, b) => a + b) / targets.length, isLeaf: true };
+    }
+
+    // Find best split (simplified - just try random features and thresholds)
+    let bestScore = Infinity;
+    let bestSplit = null;
+    const nFeatures = samples[0].length;
+    
+    for (let trial = 0; trial < Math.min(10, nFeatures * 3); trial++) {
+      const featureIdx = Math.floor(Math.random() * nFeatures);
+      const values = samples.map(s => s[featureIdx]).sort((a, b) => a - b);
+      const threshold = values[Math.floor(Math.random() * values.length)];
+      
+      const leftIndices = [];
+      const rightIndices = [];
+      
+      for (let i = 0; i < samples.length; i++) {
+        if (samples[i][featureIdx] <= threshold) {
+          leftIndices.push(i);
+        } else {
+          rightIndices.push(i);
+        }
+      }
+      
+      if (leftIndices.length === 0 || rightIndices.length === 0) continue;
+      
+      const leftTargets = leftIndices.map(i => targets[i]);
+      const rightTargets = rightIndices.map(i => targets[i]);
+      const leftMean = leftTargets.reduce((a, b) => a + b) / leftTargets.length;
+      const rightMean = rightTargets.reduce((a, b) => a + b) / rightTargets.length;
+      
+      const score = leftTargets.reduce((sum, t) => sum + (t - leftMean) ** 2, 0) + 
+                   rightTargets.reduce((sum, t) => sum + (t - rightMean) ** 2, 0);
+      
+      if (score < bestScore) {
+        bestScore = score;
+        bestSplit = { featureIdx, threshold, leftIndices, rightIndices };
+      }
+    }
+    
+    if (!bestSplit) {
+      return { prediction: targets.reduce((a, b) => a + b) / targets.length, isLeaf: true };
+    }
+    
+    const leftSamples = bestSplit.leftIndices.map(i => samples[i]);
+    const leftTargets = bestSplit.leftIndices.map(i => targets[i]);
+    const rightSamples = bestSplit.rightIndices.map(i => samples[i]);
+    const rightTargets = bestSplit.rightIndices.map(i => targets[i]);
+    
+    return {
+      featureIdx: bestSplit.featureIdx,
+      threshold: bestSplit.threshold,
+      left: SimpleRandomForest.createNode(leftSamples, leftTargets, depth + 1, maxDepth, minSamplesSplit),
+      right: SimpleRandomForest.createNode(rightSamples, rightTargets, depth + 1, maxDepth, minSamplesSplit),
+      isLeaf: false
+    };
+  }
+
+  train(features, targets) {
+    for (let i = 0; i < this.nTrees; i++) {
+      // Bootstrap sampling
+      const bootstrapSize = Math.floor(features.length * 0.8);
+      const bootstrapIndices = [];
+      for (let j = 0; j < bootstrapSize; j++) {
+        bootstrapIndices.push(Math.floor(Math.random() * features.length));
+      }
+      
+      const bootstrapFeatures = bootstrapIndices.map(idx => features[idx]);
+      const bootstrapTargets = bootstrapIndices.map(idx => targets[idx]);
+      
+      const tree = SimpleRandomForest.createNode(
+        bootstrapFeatures, 
+        bootstrapTargets, 
+        0, 
+        this.maxDepth, 
+        this.minSamplesSplit
+      );
+      
+      this.trees.push(tree);
+    }
+    this.isTrained = true;
+  }
+
+  static predictSingle(tree, sample) {
+    if (tree.isLeaf) return tree.prediction;
+    if (sample[tree.featureIdx] <= tree.threshold) {
+      return SimpleRandomForest.predictSingle(tree.left, sample);
+    } else {
+      return SimpleRandomForest.predictSingle(tree.right, sample);
+    }
+  }
+
+  predict(samples) {
+    if (!this.isTrained) throw new Error('Model not trained');
+    
+    return samples.map(sample => {
+      const predictions = this.trees.map(tree => 
+        SimpleRandomForest.predictSingle(tree, sample)
+      );
+      return predictions.reduce((a, b) => a + b) / predictions.length;
+    });
+  }
+}
+
+// Generate training data for RF model
+function generateTrainingData(symbol, historicalData) {
+  const features = [];
+  const targets = [];
+  
+  for (let i = 0; i < historicalData.length; i++) {
+    const price = historicalData[i].close;
+    
+    for (const dte of [1, 3, 7, 14, 21]) {
+      for (const otmFrac of [0.02, 0.05, 0.10, 0.15]) {
+        const strike = price * (1 + otmFrac);
+        
+        // Calculate simple volatility (last 20 days if available)
+        let vol = 0.25; // default
+        if (i >= 20) {
+          const returns = [];
+          for (let j = Math.max(0, i - 19); j < i; j++) {
+            returns.push(Math.log(historicalData[j + 1].close / historicalData[j].close));
+          }
+          const mean = returns.reduce((a, b) => a + b) / returns.length;
+          const variance = returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / returns.length;
+          vol = Math.sqrt(variance * 252); // Annualized volatility
+        }
+        
+        const T = dte / 365.0;
+        const r = 0.045;
+        const delta = calculateDelta(price, strike, T, r, vol);
+        const bsProb = calculateAssignmentProbability(price, strike, T, r, vol, delta).enhanced;
+        
+        // Add noise to create training target
+        const noise = (Math.random() - 0.5) * 0.1;
+        const target = Math.max(0, Math.min(1, bsProb + noise));
+        
+        features.push([
+          price / strike, // moneyness
+          dte, // days to expiry
+          vol, // volatility
+          delta, // delta
+          otmFrac, // otm percent
+          Math.random() * 2, // volume (randomized for training)
+          bsProb // bs probability
+        ]);
+        
+        targets.push(target);
+      }
+    }
+  }
+  
+  return { features, targets };
+}
+
+// RF Analysis endpoint
+app.get('/api/analyze-rf/:symbol', async (req, res) => {
+  const symbol = toUpperNoSpaces(req.params.symbol);
+  if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
+  
+  try {
+    console.log(`Starting RF analysis for ${symbol}...`);
+    
+    // Get historical data for training (1 year)
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setFullYear(endDate.getFullYear() - 1);
+    
+    const historicalData = await yf.historical(symbol, {
+      period1: startDate,
+      period2: endDate,
+      interval: '1d'
+    });
+    
+    if (!historicalData || historicalData.length < 100) {
+      return res.status(400).json({ error: 'Insufficient historical data for RF training' });
+    }
+    
+    // Train or get cached model
+    if (!trainedModels[symbol]) {
+      console.log(`Training RF model for ${symbol}...`);
+      const { features, targets } = generateTrainingData(symbol, historicalData);
+      
+      const model = new SimpleRandomForest(120, 10, 5);
+      model.train(features, targets);
+      
+      // Calculate simple accuracy metrics on training data
+      const predictions = model.predict(features);
+      const mae = predictions.reduce((sum, pred, i) => sum + Math.abs(pred - targets[i]), 0) / predictions.length;
+      const variance = targets.reduce((sum, t) => sum + (t - targets.reduce((a, b) => a + b) / targets.length) ** 2, 0) / targets.length;
+      const mse = predictions.reduce((sum, pred, i) => sum + (pred - targets[i]) ** 2, 0) / predictions.length;
+      const r2 = 1 - (mse / variance);
+      
+      trainedModels[symbol] = { model, stats: { mae, r2 } };
+      console.log(`RF model trained for ${symbol}. MAE=${mae.toFixed(4)}, R2=${r2.toFixed(4)}`);
+    }
+    
+    const { model, stats } = trainedModels[symbol];
+    
+    // Get current options data
+    const quote = await yf.quoteSummary(symbol, { modules: ['price'] });
+    const currentPrice = quote?.price?.regularMarketPrice;
+    if (!currentPrice) {
+      return res.status(400).json({ error: 'Unable to get current price' });
+    }
+    
+    const optionsBase = await yf.options(symbol);
+    const expirations = optionsBase?.expirationDates || [];
+    if (!expirations.length) {
+      return res.status(404).json({ error: 'No options available' });
+    }
+    
+    // Get next 4 expirations
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const futureExpirations = expirations
+      .filter(exp => exp.getTime() >= today.getTime())
+      .sort((a, b) => a.getTime() - b.getTime())
+      .slice(0, 4);
+    
+    const otmLow = currentPrice * 1.001;
+    const otmHigh = currentPrice * 1.25; // 25% OTM limit like notebook
+    
+    const weeksData = [];
+    
+    for (const expDate of futureExpirations) {
+      try {
+        const chain = await yf.options(symbol, { date: expDate });
+        const opt = chain?.options?.[0];
+        if (!opt?.calls) continue;
+        
+        const daysToExpiry = (expDate.getTime() - Date.now()) / (1000 * 3600 * 24);
+        const timeToExpiry = daysToExpiry / 365.0;
+        
+        const processedOptions = [];
+        let bestOption = null;
+        
+        for (const call of opt.calls) {
+          if (call.strike < otmLow || call.strike > otmHigh) continue;
+          
+          // Minimum liquidity requirements
+          const minVol = daysToExpiry <= 16 ? 10 : 1;
+          const minOi = daysToExpiry <= 16 ? 50 : 10;
+          if ((call.volume || 0) < minVol || (call.openInterest || 0) < minOi) continue;
+          
+          const bid = call.bid || 0;
+          const ask = call.ask || 0;
+          if (bid <= 0 || ask <= 0) continue;
+          
+          const mid = (bid + ask) / 2;
+          const spreadPct = (ask - bid) / Math.max(mid, 1e-9);
+          if (spreadPct > 0.5) continue; // Skip wide spreads
+          
+          const iv = call.impliedVolatility || 0.25;
+          const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
+          const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
+          
+          // Get RF prediction
+          const features = [
+            currentPrice / call.strike, // moneyness
+            daysToExpiry,
+            iv,
+            delta,
+            (call.strike - currentPrice) / currentPrice, // otm percent
+            (call.volume || 0) / 1_000_000, // volume in millions
+            bsProbs.enhanced
+          ];
+          
+          let rfProb = bsProbs.enhanced;
+          try {
+            rfProb = Math.max(0, Math.min(1, model.predict([features])[0]));
+          } catch (e) {
+            console.warn(`RF prediction failed, using BS: ${e.message}`);
+          }
+          
+          // Final probability adjustments (from notebook)
+          let finalProb = rfProb;
+          
+          const otmFrac = (call.strike - currentPrice) / currentPrice;
+          if (otmFrac < 0.02 || (finalProb * 100) > 25.0) continue; // Skip if too ITM or high assignment risk
+          
+          const returnPct = (mid / currentPrice) * 100;
+          
+          // Check return targets
+          const meetsWeeklyTarget = daysToExpiry <= 8 && returnPct >= 0.05;
+          const meetsBiweeklyTarget = daysToExpiry <= 16 && returnPct >= 0.10;
+          const meetsTarget = meetsWeeklyTarget || meetsBiweeklyTarget;
+          
+          if (daysToExpiry <= 16 && !meetsTarget) continue; // Skip if doesn't meet targets for short-term
+          
+          const months = Math.max(1, Math.ceil(daysToExpiry / 30));
+          const annualYield = returnPct * (12 / months);
+          
+          const optionData = {
+            strike: call.strike,
+            premium: mid.toFixed(2),
+            returnPercent: returnPct.toFixed(3),
+            annualYield: annualYield.toFixed(1),
+            otmPercent: (otmFrac * 100).toFixed(2),
+            bsProbability: (bsProbs.enhanced * 100).toFixed(1),
+            rfProbability: (rfProb * 100).toFixed(1),
+            finalProbability: (finalProb * 100).toFixed(1),
+            openInterest: call.openInterest,
+            volume: call.volume,
+            daysToExpiry: Math.round(daysToExpiry)
+          };
+          
+          processedOptions.push(optionData);
+          
+          // Find best option (prefer farther OTM and lower final probability)
+          if (!bestOption || (otmFrac > (bestOption.strike - currentPrice) / currentPrice && finalProb < bestOption.finalProbability / 100)) {
+            bestOption = optionData;
+          }
+        }
+        
+        processedOptions.sort((a, b) => a.strike - b.strike);
+        
+        weeksData.push({
+          expiration: expDate.toISOString(),
+          options: processedOptions,
+          bestOption: bestOption
+        });
+        
+      } catch (e) {
+        console.warn(`Failed to process expiration ${expDate}: ${e.message}`);
+      }
+    }
+    
+    res.json({
+      symbol,
+      currentPrice,
+      modelStats: stats,
+      otmRange: { low: otmLow, high: otmHigh },
+      weeksData
+    });
+    
+  } catch (err) {
+    console.error(`RF analysis error for ${symbol}:`, err);
+    res.status(500).json({ error: 'RF analysis failed', details: err?.message });
+  }
+});
+
 // Export for Vercel
 module.exports = app;
