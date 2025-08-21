@@ -530,6 +530,67 @@ function generateTrainingData(symbol, historicalData) {
   return { features, targets };
 }
 
+// Calculate IV Rank for a symbol (simplified version)
+async function calculateIVRank(symbol) {
+  try {
+    // Get historical options data for IV rank calculation
+    // This is a simplified approach - in production, you'd want more sophisticated IV history
+    const quote = await yf.quoteSummary(symbol, { modules: ['summaryDetail'] });
+    const currentIV = quote?.summaryDetail?.impliedVolatility;
+    
+    if (!currentIV) return null;
+    
+    // Get historical price data to estimate historical IV range
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setFullYear(endDate.getFullYear() - 1); // 1 year lookback
+    
+    const historicalData = await yf.historical(symbol, {
+      period1: startDate,
+      period2: endDate,
+      interval: '1d'
+    });
+    
+    if (!historicalData || historicalData.length < 100) return null;
+    
+    // Calculate historical volatility as proxy for IV range
+    const returns = [];
+    for (let i = 1; i < historicalData.length; i++) {
+      const return_ = Math.log(historicalData[i].close / historicalData[i-1].close);
+      returns.push(return_);
+    }
+    
+    // Calculate rolling 20-day volatilities to approximate IV range
+    const rollingVols = [];
+    for (let i = 19; i < returns.length; i++) {
+      const windowReturns = returns.slice(i-19, i+1);
+      const mean = windowReturns.reduce((a, b) => a + b) / windowReturns.length;
+      const variance = windowReturns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / windowReturns.length;
+      const vol = Math.sqrt(variance * 252); // Annualized
+      rollingVols.push(vol);
+    }
+    
+    if (rollingVols.length === 0) return null;
+    
+    const minVol = Math.min(...rollingVols);
+    const maxVol = Math.max(...rollingVols);
+    
+    // Calculate IV rank (0-100%)
+    const ivRank = ((currentIV - minVol) / (maxVol - minVol)) * 100;
+    
+    return {
+      currentIV: currentIV,
+      ivRank: Math.max(0, Math.min(100, ivRank)),
+      minIV: minVol,
+      maxIV: maxVol
+    };
+    
+  } catch (error) {
+    console.warn(`Could not calculate IV rank for ${symbol}:`, error.message);
+    return null;
+  }
+}
+
 // Get earnings date for a symbol
 async function getEarningsDate(symbol) {
   try {
@@ -598,8 +659,11 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
     
     const { model, stats } = trainedModels[symbol];
     
-    // Get earnings date
-    const earningsDate = await getEarningsDate(symbol);
+    // Get earnings date and IV rank
+    const [earningsDate, ivRankData] = await Promise.all([
+      getEarningsDate(symbol),
+      calculateIVRank(symbol)
+    ]);
     
     // Get current options data
     const quote = await yf.quoteSummary(symbol, { modules: ['price'] });
@@ -614,13 +678,26 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       return res.status(404).json({ error: 'No options available' });
     }
     
-    // Get next 5 expirations
+    // Focus on 30-45 DTE optimal timeframe
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const futureExpirations = expirations
+    const minDTE = 30;
+    const maxDTE = 45;
+    const minDate = new Date(today.getTime() + minDTE * 24 * 60 * 60 * 1000);
+    const maxDate = new Date(today.getTime() + maxDTE * 24 * 60 * 60 * 1000);
+    
+    // Get all expirations in 30-45 DTE range, plus a few outside for comparison
+    const optimalExpirations = expirations
+      .filter(exp => exp.getTime() >= minDate.getTime() && exp.getTime() <= maxDate.getTime())
+      .sort((a, b) => a.getTime() - b.getTime());
+    
+    // If no options in optimal range, include nearest options
+    const fallbackExpirations = expirations
       .filter(exp => exp.getTime() >= today.getTime())
       .sort((a, b) => a.getTime() - b.getTime())
-      .slice(0, 5);
+      .slice(0, 6);
+    
+    const futureExpirations = optimalExpirations.length > 0 ? optimalExpirations : fallbackExpirations;
     
     const otmLow = currentPrice * 1.001;
     const otmHigh = currentPrice * 1.25; // 25% OTM limit like notebook
@@ -635,6 +712,9 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
         
         const daysToExpiry = (expDate.getTime() - Date.now()) / (1000 * 3600 * 24);
         const timeToExpiry = daysToExpiry / 365.0;
+        
+        // Check if this expiration is in optimal DTE range
+        const isOptimalDTE = daysToExpiry >= 30 && daysToExpiry <= 45;
         
         // Check if earnings occurs before this expiration
         let earningsWarning = null;
@@ -740,6 +820,8 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
         
         weeksData.push({
           expiration: expDate.toISOString(),
+          daysToExpiry: Math.round(daysToExpiry),
+          isOptimalDTE: isOptimalDTE,
           options: processedOptions,
           bestOption: bestOption,
           earningsWarning: earningsWarning
@@ -756,6 +838,8 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       modelStats: stats,
       otmRange: { low: otmLow, high: otmHigh },
       earningsDate: earningsDate ? earningsDate.toISOString() : null,
+      ivRankData: ivRankData,
+      dteRange: { min: 30, max: 45 },
       weeksData
     });
     
