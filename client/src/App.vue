@@ -57,10 +57,14 @@ async function runRFAnalysis() {
       <div class="rf-stats">
         <div><strong>Current Price:</strong> ${{ rfAnalysis.currentPrice?.toFixed(2) }}</div>
         <div><strong>Target DTE:</strong> {{ rfAnalysis.dteRange?.min }}-{{ rfAnalysis.dteRange?.max }} days (optimal theta decay)</div>
-        <div v-if="rfAnalysis.ivRankData"><strong>IV Rank:</strong> {{ rfAnalysis.ivRankData.ivRank?.toFixed(1) }}% 
-          <span :class="rfAnalysis.ivRankData.ivRank >= 50 ? 'iv-high' : 'iv-low'">
-            ({{ rfAnalysis.ivRankData.ivRank >= 50 ? 'HIGH - Good for selling' : 'LOW - Poor premiums' }})
+        <div><strong>IV Rank:</strong> 
+          <span v-if="rfAnalysis.ivRankData && rfAnalysis.ivRankData.ivRank !== null">
+            {{ rfAnalysis.ivRankData.ivRank?.toFixed(1) }}%
+            <span :class="rfAnalysis.ivRankData.ivRank >= 50 ? 'iv-high' : 'iv-low'">
+              ({{ rfAnalysis.ivRankData.ivRank >= 50 ? 'HIGH - Good for selling' : 'LOW - Poor premiums' }})
+            </span>
           </span>
+          <span v-else class="iv-unavailable">Not available</span>
         </div>
         <div><strong>Model Accuracy:</strong> R² = {{ rfAnalysis.modelStats?.r2?.toFixed(4) }}, MAE = {{ rfAnalysis.modelStats?.mae?.toFixed(4) }}</div>
         <div v-if="rfAnalysis.earningsDate"><strong>Next Earnings:</strong> {{ new Date(rfAnalysis.earningsDate).toLocaleDateString() }}</div>
@@ -149,6 +153,7 @@ h3 { margin: 0.25rem 0 0.5rem; }
 .earnings-warning { background: #fef2f2; border: 2px solid #ef4444; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; color: #dc2626; }
 .iv-high { color: #059669; font-weight: bold; }
 .iv-low { color: #dc2626; font-weight: bold; }
+.iv-unavailable { color: #6b7280; font-style: italic; }
 .optimal-dte { border-left: 4px solid #f59e0b; background: #fffbeb; }
 .optimal-dte h3 { color: #d97706; }
 </style>

@@ -533,12 +533,41 @@ function generateTrainingData(symbol, historicalData) {
 // Calculate IV Rank for a symbol (simplified version)
 async function calculateIVRank(symbol) {
   try {
-    // Get historical options data for IV rank calculation
-    // This is a simplified approach - in production, you'd want more sophisticated IV history
-    const quote = await yf.quoteSummary(symbol, { modules: ['summaryDetail'] });
-    const currentIV = quote?.summaryDetail?.impliedVolatility;
+    console.log(`Calculating IV rank for ${symbol}...`);
     
-    if (!currentIV) return null;
+    // Try multiple approaches to get current IV
+    let currentIV = null;
+    
+    // Approach 1: Try summaryDetail
+    try {
+      const quote = await yf.quoteSummary(symbol, { modules: ['summaryDetail'] });
+      currentIV = quote?.summaryDetail?.impliedVolatility;
+      console.log(`SummaryDetail IV for ${symbol}:`, currentIV);
+    } catch (e) {
+      console.warn(`Failed to get IV from summaryDetail:`, e.message);
+    }
+    
+    // Approach 2: Try to get IV from options chain
+    if (!currentIV) {
+      try {
+        const optionsBase = await yf.options(symbol);
+        if (optionsBase?.expirationDates?.[0]) {
+          const chain = await yf.options(symbol, { date: optionsBase.expirationDates[0] });
+          const atm = chain?.options?.[0]?.calls?.find(c => c.inTheMoney === false);
+          if (atm?.impliedVolatility) {
+            currentIV = atm.impliedVolatility;
+            console.log(`Options chain IV for ${symbol}:`, currentIV);
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to get IV from options chain:`, e.message);
+      }
+    }
+    
+    if (!currentIV) {
+      console.warn(`No IV data available for ${symbol}`);
+      return null;
+    }
     
     // Get historical price data to estimate historical IV range
     const endDate = new Date();
@@ -578,12 +607,15 @@ async function calculateIVRank(symbol) {
     // Calculate IV rank (0-100%)
     const ivRank = ((currentIV - minVol) / (maxVol - minVol)) * 100;
     
-    return {
+    const result = {
       currentIV: currentIV,
       ivRank: Math.max(0, Math.min(100, ivRank)),
       minIV: minVol,
       maxIV: maxVol
     };
+    
+    console.log(`IV Rank calculation for ${symbol}:`, result);
+    return result;
     
   } catch (error) {
     console.warn(`Could not calculate IV rank for ${symbol}:`, error.message);
@@ -678,7 +710,7 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       return res.status(404).json({ error: 'No options available' });
     }
     
-    // Focus on 30-45 DTE optimal timeframe
+    // Focus on 30-45 DTE optimal timeframe but ensure at least 3 expirations
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const minDTE = 30;
@@ -686,18 +718,39 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
     const minDate = new Date(today.getTime() + minDTE * 24 * 60 * 60 * 1000);
     const maxDate = new Date(today.getTime() + maxDTE * 24 * 60 * 60 * 1000);
     
-    // Get all expirations in 30-45 DTE range, plus a few outside for comparison
-    const optimalExpirations = expirations
-      .filter(exp => exp.getTime() >= minDate.getTime() && exp.getTime() <= maxDate.getTime())
+    // Get all future expirations sorted by date
+    const allFutureExpirations = expirations
+      .filter(exp => exp.getTime() >= today.getTime())
       .sort((a, b) => a.getTime() - b.getTime());
     
-    // If no options in optimal range, include nearest options
-    const fallbackExpirations = expirations
-      .filter(exp => exp.getTime() >= today.getTime())
-      .sort((a, b) => a.getTime() - b.getTime())
-      .slice(0, 6);
+    // Get optimal expirations in 30-45 DTE range
+    const optimalExpirations = allFutureExpirations
+      .filter(exp => exp.getTime() >= minDate.getTime() && exp.getTime() <= maxDate.getTime());
     
-    const futureExpirations = optimalExpirations.length > 0 ? optimalExpirations : fallbackExpirations;
+    // Ensure we have at least 3 expirations by including nearby dates if needed
+    let futureExpirations = [...optimalExpirations];
+    
+    if (futureExpirations.length < 3) {
+      // Add the closest expirations before 30 DTE
+      const earlyExpirations = allFutureExpirations
+        .filter(exp => exp.getTime() < minDate.getTime())
+        .slice(-2); // Take last 2 (closest to 30 DTE)
+      
+      // Add the closest expirations after 45 DTE
+      const lateExpirations = allFutureExpirations
+        .filter(exp => exp.getTime() > maxDate.getTime())
+        .slice(0, 3); // Take first 3 (closest to 45 DTE)
+      
+      // Combine and sort
+      futureExpirations = [...earlyExpirations, ...optimalExpirations, ...lateExpirations]
+        .sort((a, b) => a.getTime() - b.getTime())
+        .slice(0, 6); // Limit to 6 total
+    }
+    
+    // Ensure we have at least 3 expirations
+    if (futureExpirations.length < 3) {
+      futureExpirations = allFutureExpirations.slice(0, Math.max(3, futureExpirations.length));
+    }
     
     const otmLow = currentPrice * 1.001;
     const otmHigh = currentPrice * 1.25; // 25% OTM limit like notebook
