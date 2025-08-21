@@ -650,25 +650,21 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
             console.warn(`RF prediction failed, using BS: ${e.message}`);
           }
           
-          // Final probability adjustments (from notebook)
-          let finalProb = rfProb;
+          // Blended probability: RF + BS with market adjustments
+          let blendedProb = (rfProb * 0.7) + (bsProbs.enhanced * 0.3); // 70% RF, 30% enhanced BS
           
-          // Add dividend adjustment (estimated)
-          // TODO: Could implement actual dividend checking here
-          
-          // Add borrow fee adjustment (placeholder - could integrate with real data)
+          // Add market adjustments
           const borrowFee = 0.0; // Default to 0 for now
-          finalProb += 0.01 * (borrowFee / 10.0);
+          blendedProb += 0.01 * (borrowFee / 10.0);
           
-          // Add sentiment adjustment (placeholder - could integrate with sentiment API)
           const sentiment = 0.0; // Default to 0 for now  
-          finalProb += 0.02 * sentiment;
+          blendedProb += 0.02 * sentiment;
           
           // Ensure probability stays within bounds
-          finalProb = Math.max(0, Math.min(1, finalProb));
+          blendedProb = Math.max(0, Math.min(1, blendedProb));
           
           const otmFrac = (call.strike - currentPrice) / currentPrice;
-          if (otmFrac < 0.02 || (finalProb * 100) > 25.0) continue; // Skip if too ITM or high assignment risk
+          if (otmFrac < 0.02 || (blendedProb * 100) > 25.0) continue; // Skip if too ITM or high assignment risk
           
           const returnPct = (mid / currentPrice) * 100;
           
@@ -688,9 +684,7 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
             returnPercent: returnPct.toFixed(3),
             annualYield: annualYield.toFixed(1),
             otmPercent: (otmFrac * 100).toFixed(2),
-            bsProbability: (bsProbs.enhanced * 100).toFixed(1),
-            rfProbability: (rfProb * 100).toFixed(1),
-            finalProbability: (finalProb * 100).toFixed(1),
+            assignmentProbability: (blendedProb * 100).toFixed(1),
             openInterest: call.openInterest,
             volume: call.volume,
             daysToExpiry: Math.round(daysToExpiry)
@@ -698,8 +692,8 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
           
           processedOptions.push(optionData);
           
-          // Find best option (prefer farther OTM and lower final probability)
-          if (!bestOption || (otmFrac > (bestOption.strike - currentPrice) / currentPrice && finalProb < bestOption.finalProbability / 100)) {
+          // Find best option (prefer farther OTM and lower blended probability)
+          if (!bestOption || (otmFrac > (bestOption.strike - currentPrice) / currentPrice && blendedProb < bestOption.assignmentProbability / 100)) {
             bestOption = optionData;
           }
         }

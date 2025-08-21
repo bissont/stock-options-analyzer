@@ -156,17 +156,16 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
         <div><strong>OTM Range:</strong> ${{ rfAnalysis.otmRange?.low?.toFixed(2) }} - ${{ rfAnalysis.otmRange?.high?.toFixed(2) }}</div>
       </div>
       <div class="probability-legend">
-        <small><strong>Probability Types:</strong> BS = Enhanced Black-Scholes | RF = Random Forest Prediction | Final = RF + Market Adjustments</small>
+        <small><strong>Assignment %:</strong> Blended probability (70% RF + 30% Enhanced Black-Scholes) with market adjustments</small>
       </div>
       
       <div v-for="(week, index) in rfAnalysis.weeksData" :key="week.expiration" class="rf-week-section">
         <h3>{{ getWeekLabel(index) }} — {{ new Date(week.expiration).toLocaleDateString() }}</h3>
         
         <div v-if="week.bestOption" class="best-rf-alert">
-          🎯 <strong>RF Best Option:</strong> ${{ week.bestOption.strike }} @ ${{ week.bestOption.premium }} 
+          🎯 <strong>Best Option:</strong> ${{ week.bestOption.strike }} @ ${{ week.bestOption.premium }} 
           | {{ week.bestOption.returnPercent }}% return (~{{ week.bestOption.annualYield }}%/yr)
-          | RF Probability: {{ week.bestOption.rfProbability }}% 
-          | Final Probability: {{ week.bestOption.finalProbability }}%
+          | Assignment Risk: {{ week.bestOption.assignmentProbability }}%
           | OTM {{ week.bestOption.otmPercent }}%
         </div>
         
@@ -180,9 +179,7 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
               <th>Premium</th>
               <th>Return %</th>
               <th>Annual Yield %</th>
-              <th>BS Prob %</th>
-              <th>RF Prob %</th>
-              <th>Final Prob %</th>
+              <th>Assignment %</th>
               <th>OI</th>
               <th>Volume</th>
             </tr>
@@ -195,9 +192,7 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
               <td>${{ option.premium }}</td>
               <td>{{ option.returnPercent }}%</td>
               <td>{{ option.annualYield }}%</td>
-              <td>{{ option.bsProbability }}%</td>
-              <td>{{ option.rfProbability }}%</td>
-              <td>{{ option.finalProbability }}%</td>
+              <td>{{ option.assignmentProbability }}%</td>
               <td>{{ option.openInterest?.toLocaleString() || 'N/A' }}</td>
               <td>{{ option.volume?.toLocaleString() || 0 }}</td>
             </tr>
