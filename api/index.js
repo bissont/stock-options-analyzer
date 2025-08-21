@@ -710,47 +710,25 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       return res.status(404).json({ error: 'No options available' });
     }
     
-    // Focus on 30-45 DTE optimal timeframe but ensure at least 3 expirations
+    // Get the 3 nearest expirations around 30-45 DTE optimal range
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const minDTE = 30;
-    const maxDTE = 45;
-    const minDate = new Date(today.getTime() + minDTE * 24 * 60 * 60 * 1000);
-    const maxDate = new Date(today.getTime() + maxDTE * 24 * 60 * 60 * 1000);
+    const targetDTE = 37.5; // Middle of 30-45 range
+    const targetDate = new Date(today.getTime() + targetDTE * 24 * 60 * 60 * 1000);
     
-    // Get all future expirations sorted by date
+    // Get all future expirations and find the 3 closest to target date
     const allFutureExpirations = expirations
       .filter(exp => exp.getTime() >= today.getTime())
-      .sort((a, b) => a.getTime() - b.getTime());
+      .map(exp => ({
+        date: exp,
+        distanceFromTarget: Math.abs(exp.getTime() - targetDate.getTime())
+      }))
+      .sort((a, b) => a.distanceFromTarget - b.distanceFromTarget)
+      .slice(0, 3) // Take only the 3 nearest
+      .map(item => item.date)
+      .sort((a, b) => a.getTime() - b.getTime()); // Sort chronologically
     
-    // Get optimal expirations in 30-45 DTE range
-    const optimalExpirations = allFutureExpirations
-      .filter(exp => exp.getTime() >= minDate.getTime() && exp.getTime() <= maxDate.getTime());
-    
-    // Ensure we have at least 3 expirations by including nearby dates if needed
-    let futureExpirations = [...optimalExpirations];
-    
-    if (futureExpirations.length < 3) {
-      // Add the closest expirations before 30 DTE
-      const earlyExpirations = allFutureExpirations
-        .filter(exp => exp.getTime() < minDate.getTime())
-        .slice(-2); // Take last 2 (closest to 30 DTE)
-      
-      // Add the closest expirations after 45 DTE
-      const lateExpirations = allFutureExpirations
-        .filter(exp => exp.getTime() > maxDate.getTime())
-        .slice(0, 3); // Take first 3 (closest to 45 DTE)
-      
-      // Combine and sort
-      futureExpirations = [...earlyExpirations, ...optimalExpirations, ...lateExpirations]
-        .sort((a, b) => a.getTime() - b.getTime())
-        .slice(0, 6); // Limit to 6 total
-    }
-    
-    // Ensure we have at least 3 expirations
-    if (futureExpirations.length < 3) {
-      futureExpirations = allFutureExpirations.slice(0, Math.max(3, futureExpirations.length));
-    }
+    const futureExpirations = allFutureExpirations;
     
     const otmLow = currentPrice * 1.001;
     const otmHigh = currentPrice * 1.25; // 25% OTM limit like notebook
@@ -892,7 +870,7 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       otmRange: { low: otmLow, high: otmHigh },
       earningsDate: earningsDate ? earningsDate.toISOString() : null,
       ivRankData: ivRankData,
-      dteRange: { min: 30, max: 45 },
+      dteRange: { target: 37.5, min: 30, max: 45 },
       weeksData
     });
     
