@@ -653,6 +653,20 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
           // Final probability adjustments (from notebook)
           let finalProb = rfProb;
           
+          // Add dividend adjustment (estimated)
+          // TODO: Could implement actual dividend checking here
+          
+          // Add borrow fee adjustment (placeholder - could integrate with real data)
+          const borrowFee = 0.0; // Default to 0 for now
+          finalProb += 0.01 * (borrowFee / 10.0);
+          
+          // Add sentiment adjustment (placeholder - could integrate with sentiment API)
+          const sentiment = 0.0; // Default to 0 for now  
+          finalProb += 0.02 * sentiment;
+          
+          // Ensure probability stays within bounds
+          finalProb = Math.max(0, Math.min(1, finalProb));
+          
           const otmFrac = (call.strike - currentPrice) / currentPrice;
           if (otmFrac < 0.02 || (finalProb * 100) > 25.0) continue; // Skip if too ITM or high assignment risk
           

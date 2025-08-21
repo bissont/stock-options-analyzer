@@ -155,6 +155,9 @@ const sortedPuts = computed(() => (options.value?.puts || []).slice().sort((a,b)
         <div><strong>Model Accuracy:</strong> R² = {{ rfAnalysis.modelStats?.r2?.toFixed(4) }}, MAE = {{ rfAnalysis.modelStats?.mae?.toFixed(4) }}</div>
         <div><strong>OTM Range:</strong> ${{ rfAnalysis.otmRange?.low?.toFixed(2) }} - ${{ rfAnalysis.otmRange?.high?.toFixed(2) }}</div>
       </div>
+      <div class="probability-legend">
+        <small><strong>Probability Types:</strong> BS = Enhanced Black-Scholes | RF = Random Forest Prediction | Final = RF + Market Adjustments</small>
+      </div>
       
       <div v-for="(week, index) in rfAnalysis.weeksData" :key="week.expiration" class="rf-week-section">
         <h3>{{ getWeekLabel(index) }} — {{ new Date(week.expiration).toLocaleDateString() }}</h3>
@@ -244,4 +247,5 @@ h3 { margin: 0.25rem 0 0.5rem; }
 .best-rf-alert { background: #ecfdf5; border: 2px solid #059669; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; color: #047857; }
 .rf-table { margin-top: 1rem; }
 .rf-best { background: #ecfdf5 !important; border-left: 4px solid #059669; }
+.probability-legend { margin-bottom: 1rem; padding: 0.5rem; background: #f8fafc; border-radius: 4px; }
 </style>
