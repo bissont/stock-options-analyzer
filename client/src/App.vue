@@ -7,7 +7,7 @@ const error = ref('')
 const rfAnalysis = ref(null)
 
 function getWeekLabel(index) {
-  const labels = ['This Week', 'Next Week', 'Week 3', 'Week 4']
+  const labels = ['This Week', 'Next Week', 'Week 3', 'Week 4', 'Week 5']
   return labels[index] || `Week ${index + 1}`
 }
 
@@ -57,6 +57,7 @@ async function runRFAnalysis() {
         <div><strong>Current Price:</strong> ${{ rfAnalysis.currentPrice?.toFixed(2) }}</div>
         <div><strong>Model Accuracy:</strong> R² = {{ rfAnalysis.modelStats?.r2?.toFixed(4) }}, MAE = {{ rfAnalysis.modelStats?.mae?.toFixed(4) }}</div>
         <div><strong>OTM Range:</strong> ${{ rfAnalysis.otmRange?.low?.toFixed(2) }} - ${{ rfAnalysis.otmRange?.high?.toFixed(2) }}</div>
+        <div v-if="rfAnalysis.earningsDate"><strong>Next Earnings:</strong> {{ new Date(rfAnalysis.earningsDate).toLocaleDateString() }}</div>
       </div>
       <div class="probability-legend">
         <small><strong>Assignment %:</strong> Blended probability (70% RF + 30% Enhanced Black-Scholes) with market adjustments</small>
@@ -64,6 +65,11 @@ async function runRFAnalysis() {
       
       <div v-for="(week, index) in rfAnalysis.weeksData" :key="week.expiration" class="rf-week-section">
         <h3>{{ getWeekLabel(index) }} — {{ new Date(week.expiration).toLocaleDateString() }}</h3>
+        
+        <div v-if="week.earningsWarning" class="earnings-warning">
+          ⚠️ <strong>Earnings Risk:</strong> Earnings expected {{ week.earningsWarning.daysToEarnings }} days before expiration 
+          ({{ new Date(week.earningsWarning.earningsDate).toLocaleDateString() }}). High volatility risk!
+        </div>
         
         <div v-if="week.bestOption" class="best-rf-alert">
           🎯 <strong>Best Option:</strong> ${{ week.bestOption.strike }} @ ${{ week.bestOption.premium }} 
@@ -133,4 +139,5 @@ h3 { margin: 0.25rem 0 0.5rem; }
 .rf-table { margin-top: 1rem; }
 .rf-best { background: #ecfdf5 !important; border-left: 4px solid #059669; }
 .probability-legend { margin-bottom: 1rem; padding: 0.5rem; background: #f8fafc; border-radius: 4px; }
+.earnings-warning { background: #fef2f2; border: 2px solid #ef4444; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; color: #dc2626; }
 </style>

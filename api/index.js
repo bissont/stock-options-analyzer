@@ -530,6 +530,30 @@ function generateTrainingData(symbol, historicalData) {
   return { features, targets };
 }
 
+// Get earnings date for a symbol
+async function getEarningsDate(symbol) {
+  try {
+    // Try to get earnings calendar from Yahoo Finance
+    const quote = await yf.quoteSummary(symbol, { modules: ['calendarEvents'] });
+    const earnings = quote?.calendarEvents?.earnings;
+    
+    if (earnings && earnings.earningsDate && earnings.earningsDate.length > 0) {
+      // Yahoo Finance sometimes provides date ranges, take the first (earliest) date
+      const earningsDate = earnings.earningsDate[0];
+      return new Date(earningsDate);
+    }
+    
+    // Fallback: try to get from company financials
+    const financials = await yf.quoteSummary(symbol, { modules: ['financialData'] });
+    // This is a fallback - real implementation might need different approach
+    
+    return null;
+  } catch (error) {
+    console.warn(`Could not fetch earnings date for ${symbol}:`, error.message);
+    return null;
+  }
+}
+
 // RF Analysis endpoint
 app.get('/api/analyze-rf/:symbol', async (req, res) => {
   const symbol = toUpperNoSpaces(req.params.symbol);
@@ -574,6 +598,9 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
     
     const { model, stats } = trainedModels[symbol];
     
+    // Get earnings date
+    const earningsDate = await getEarningsDate(symbol);
+    
     // Get current options data
     const quote = await yf.quoteSummary(symbol, { modules: ['price'] });
     const currentPrice = quote?.price?.regularMarketPrice;
@@ -587,13 +614,13 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       return res.status(404).json({ error: 'No options available' });
     }
     
-    // Get next 4 expirations
+    // Get next 5 expirations
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const futureExpirations = expirations
       .filter(exp => exp.getTime() >= today.getTime())
       .sort((a, b) => a.getTime() - b.getTime())
-      .slice(0, 4);
+      .slice(0, 5);
     
     const otmLow = currentPrice * 1.001;
     const otmHigh = currentPrice * 1.25; // 25% OTM limit like notebook
@@ -608,6 +635,17 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
         
         const daysToExpiry = (expDate.getTime() - Date.now()) / (1000 * 3600 * 24);
         const timeToExpiry = daysToExpiry / 365.0;
+        
+        // Check if earnings occurs before this expiration
+        let earningsWarning = null;
+        if (earningsDate && earningsDate.getTime() < expDate.getTime() && earningsDate.getTime() > Date.now()) {
+          const daysToEarnings = (earningsDate.getTime() - Date.now()) / (1000 * 3600 * 24);
+          earningsWarning = {
+            hasEarnings: true,
+            earningsDate: earningsDate.toISOString(),
+            daysToEarnings: Math.round(daysToEarnings)
+          };
+        }
         
         const processedOptions = [];
         let bestOption = null;
@@ -703,7 +741,8 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
         weeksData.push({
           expiration: expDate.toISOString(),
           options: processedOptions,
-          bestOption: bestOption
+          bestOption: bestOption,
+          earningsWarning: earningsWarning
         });
         
       } catch (e) {
@@ -716,6 +755,7 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       currentPrice,
       modelStats: stats,
       otmRange: { low: otmLow, high: otmHigh },
+      earningsDate: earningsDate ? earningsDate.toISOString() : null,
       weeksData
     });
     
