@@ -999,80 +999,76 @@ app.get('/api/all-options/:symbol', async (req, res) => {
           }
         }
 
-        // Process calls with additional calculations
-        const calls = (opt.calls || []).map(call => {
-          const bid = call.bid || 0;
-          const ask = call.ask || 0;
-          const mid = (bid + ask) / 2;
-          const premium = mid > 0 ? mid : (call.lastPrice || 0);
-          
-          // Calculate OTM percentage
-          const otmPercent = call.strike > currentPrice ? 
-            ((call.strike - currentPrice) / currentPrice * 100).toFixed(2) : '0.00';
-          
-          // Calculate return percentage (premium as % of stock price)
-          const returnPercent = premium > 0 && currentPrice > 0 ? 
-            (premium / currentPrice * 100).toFixed(3) : '0.000';
-          
-          // Calculate annualized yield
-          const months = Math.max(1, Math.ceil(daysToExpiry / 30));
-          const annualYield = returnPercent > 0 ? 
-            (parseFloat(returnPercent) * (12 / months)).toFixed(1) : '0.0';
-          
-          // Calculate RF assignment probability
-          let assignmentProbability = '0.0';
-          if (model && premium > 0) {
-            try {
-              const iv = call.impliedVolatility || 0.25;
-              const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
-              const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
-              
-              // RF prediction features
-              const features = [
-                currentPrice / call.strike, // moneyness
-                daysToExpiry,
-                iv,
-                delta,
-                (call.strike - currentPrice) / currentPrice, // otm percent
-                (call.volume || 0) / 1_000_000, // volume in millions
-                bsProbs.enhanced
-              ];
-              
-              let rfProb = bsProbs.enhanced;
+        // Process calls with additional calculations - filter to OTM only
+        const calls = (opt.calls || [])
+          .filter(call => call.strike > currentPrice) // Only OTM calls
+          .map(call => {
+            const bid = call.bid || 0;
+            const ask = call.ask || 0;
+            const mid = (bid + ask) / 2;
+            const premium = mid > 0 ? mid : (call.lastPrice || 0);
+            
+            // Calculate OTM percentage
+            const otmPercent = ((call.strike - currentPrice) / currentPrice * 100).toFixed(2);
+            
+            // Calculate return percentage (premium as % of stock price)
+            const returnPercent = premium > 0 && currentPrice > 0 ? 
+              (premium / currentPrice * 100).toFixed(3) : '0.000';
+            
+            // Calculate annualized yield
+            const months = Math.max(1, Math.ceil(daysToExpiry / 30));
+            const annualYield = returnPercent > 0 ? 
+              (parseFloat(returnPercent) * (12 / months)).toFixed(1) : '0.0';
+            
+            // Calculate RF assignment probability
+            let assignmentProbability = '0.0';
+            if (model && premium > 0) {
               try {
-                rfProb = Math.max(0, Math.min(1, model.predict([features])[0]));
+                const iv = call.impliedVolatility || 0.25;
+                const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
+                const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
+                
+                // RF prediction features
+                const features = [
+                  currentPrice / call.strike, // moneyness
+                  daysToExpiry,
+                  iv,
+                  delta,
+                  (call.strike - currentPrice) / currentPrice, // otm percent
+                  (call.volume || 0) / 1_000_000, // volume in millions
+                  bsProbs.enhanced
+                ];
+                
+                let rfProb = bsProbs.enhanced;
+                try {
+                  rfProb = Math.max(0, Math.min(1, model.predict([features])[0]));
+                } catch (e) {
+                  console.warn(`RF prediction failed for ${call.strike}: ${e.message}`);
+                }
+                
+                // Blended probability: RF + BS with market adjustments
+                let blendedProb = (rfProb * 0.7) + (bsProbs.enhanced * 0.3);
+                blendedProb = Math.max(0, Math.min(1, blendedProb));
+                
+                assignmentProbability = (blendedProb * 100).toFixed(1);
               } catch (e) {
-                console.warn(`RF prediction failed for ${call.strike}: ${e.message}`);
+                console.warn(`Error calculating assignment probability for ${call.strike}: ${e.message}`);
               }
-              
-              // Blended probability: RF + BS with market adjustments
-              let blendedProb = (rfProb * 0.7) + (bsProbs.enhanced * 0.3);
-              blendedProb = Math.max(0, Math.min(1, blendedProb));
-              
-              assignmentProbability = (blendedProb * 100).toFixed(1);
-            } catch (e) {
-              console.warn(`Error calculating assignment probability for ${call.strike}: ${e.message}`);
             }
-          }
 
-          return {
-            contractSymbol: call.contractSymbol,
-            strike: call.strike,
-            lastPrice: call.lastPrice,
-            bid: call.bid,
-            ask: call.ask,
-            change: call.change,
-            percentChange: call.percentChange,
-            volume: call.volume,
-            openInterest: call.openInterest,
-            impliedVolatility: call.impliedVolatility,
-            inTheMoney: call.inTheMoney,
-            otmPercent: otmPercent,
-            returnPercent: returnPercent,
-            annualYield: annualYield,
-            assignmentProbability: assignmentProbability
-          };
-        });
+            return {
+              contractSymbol: call.contractSymbol,
+              strike: call.strike,
+              mid: mid > 0 ? mid.toFixed(2) : (call.lastPrice || 0).toFixed(2),
+              volume: call.volume,
+              openInterest: call.openInterest,
+              impliedVolatility: call.impliedVolatility,
+              otmPercent: otmPercent,
+              returnPercent: returnPercent,
+              annualYield: annualYield,
+              assignmentProbability: assignmentProbability
+            };
+          });
 
         // Sort calls by strike price
         calls.sort((a, b) => a.strike - b.strike);
