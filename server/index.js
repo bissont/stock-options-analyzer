@@ -723,14 +723,14 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       }))
       .sort((a, b) => a.dte - b.dte); // Sort by DTE ascending
     
-    // Simply take the 6 closest future expirations (minimum 5 DTE)
+    // Take the 6 closest future expirations (minimum 1 DTE to include more options)
     const futureExpirations = allFutureExpirations
-      .filter(exp => exp.dte >= 5) // Skip very short term (< 5 days)
+      .filter(exp => exp.dte >= 1) // Include very short term too
       .slice(0, 6) // Take first 6
       .map(exp => exp.date);
     
-    const otmLow = currentPrice * 1.001;
-    const otmHigh = currentPrice * 1.25; // 25% OTM limit like notebook
+    const otmLow = currentPrice * 1.001; // Just above current price
+    const otmHigh = currentPrice * 2.0; // Expand to 100% OTM to get more strikes
     
     const weeksData = [];
     
@@ -760,21 +760,18 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
         const processedOptions = [];
         let bestOption = null;
         
-        for (const call of opt.calls) {
-          if (call.strike < otmLow || call.strike > otmHigh) continue;
+        // Get all OTM calls and sort by strike
+        const otmCalls = opt.calls
+          .filter(call => call.strike > currentPrice && call.strike <= otmHigh)
+          .sort((a, b) => a.strike - b.strike)
+          .slice(0, 15); // Take only 15 closest OTM strikes
           
-          // Minimum liquidity requirements
-          const minVol = daysToExpiry <= 16 ? 10 : 1;
-          const minOi = daysToExpiry <= 16 ? 50 : 10;
-          if ((call.volume || 0) < minVol || (call.openInterest || 0) < minOi) continue;
-          
+        for (const call of otmCalls) {
           const bid = call.bid || 0;
           const ask = call.ask || 0;
-          if (bid <= 0 || ask <= 0) continue;
+          if (bid <= 0 && ask <= 0) continue; // Skip if no pricing data
           
-          const mid = (bid + ask) / 2;
-          const spreadPct = (ask - bid) / Math.max(mid, 1e-9);
-          if (spreadPct > 0.5) continue; // Skip wide spreads
+          const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (call.lastPrice || 0);
           
           const iv = call.impliedVolatility || 0.25;
           const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
@@ -812,16 +809,7 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
           blendedProb = Math.max(0, Math.min(1, blendedProb));
           
           const otmFrac = (call.strike - currentPrice) / currentPrice;
-          if (otmFrac < 0.02 || (blendedProb * 100) > 25.0) continue; // Skip if too ITM or high assignment risk
-          
           const returnPct = (mid / currentPrice) * 100;
-          
-          // Check return targets
-          const meetsWeeklyTarget = daysToExpiry <= 8 && returnPct >= 0.05;
-          const meetsBiweeklyTarget = daysToExpiry <= 16 && returnPct >= 0.10;
-          const meetsTarget = meetsWeeklyTarget || meetsBiweeklyTarget;
-          
-          if (daysToExpiry <= 16 && !meetsTarget) continue; // Skip if doesn't meet targets for short-term
           
           const months = Math.max(1, Math.ceil(daysToExpiry / 30));
           const annualYield = returnPct * (12 / months);
