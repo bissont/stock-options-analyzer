@@ -647,6 +647,90 @@ async function getEarningsDate(symbol) {
   }
 }
 
+// Web scraping endpoint for Yahoo Finance options page
+app.get('/api/scrape-options/:symbol', async (req, res) => {
+  const symbol = toUpperNoSpaces(req.params.symbol);
+  if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
+  
+  try {
+    console.log(`Scraping options data for ${symbol}...`);
+    
+    // Get the options page HTML
+    const url = `https://finance.yahoo.com/quote/${symbol}/options/`;
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+      },
+      timeout: 15000
+    });
+    
+    const html = response.data;
+    
+    // Look for JSON data in script tags (Yahoo often embeds data this way)
+    const jsonMatches = html.match(/root\.App\.main\s*=\s*({.+?});/);
+    if (jsonMatches) {
+      const data = JSON.parse(jsonMatches[1]);
+      const quoteSummary = data?.context?.dispatcher?.stores?.QuoteSummaryStore;
+      const optionsData = quoteSummary?.optionsData;
+      
+      if (optionsData && optionsData.options && optionsData.options.length > 0) {
+        const options = optionsData.options[0];
+        const calls = options.calls || [];
+        const puts = options.puts || [];
+        
+        console.log(`Found ${calls.length} calls and ${puts.length} puts via scraping`);
+        
+        return res.json({
+          symbol: symbol,
+          currentPrice: quoteSummary?.price?.regularMarketPrice?.raw,
+          expiration: options.expirationDate,
+          calls: calls.map(call => ({
+            strike: call.strike?.raw,
+            bid: call.bid?.raw,
+            ask: call.ask?.raw,
+            lastPrice: call.lastPrice?.raw,
+            volume: call.volume?.raw,
+            openInterest: call.openInterest?.raw,
+            impliedVolatility: call.impliedVolatility?.raw,
+            inTheMoney: call.inTheMoney
+          })),
+          source: 'scraped'
+        });
+      }
+    }
+    
+    // Fallback: look for table data patterns
+    const tableMatches = html.match(/strike.*?bid.*?ask/gi);
+    if (tableMatches) {
+      console.log(`Found potential options table data via scraping`);
+      return res.json({
+        symbol: symbol,
+        message: 'Found options table but parsing not implemented yet',
+        tableDataFound: tableMatches.length,
+        source: 'scraped-partial'
+      });
+    }
+    
+    return res.status(404).json({ 
+      error: 'No options data found in scraped page',
+      source: 'scraped-failed'
+    });
+    
+  } catch (err) {
+    console.error(`Scraping failed for ${symbol}:`, err.message);
+    return res.status(500).json({ 
+      error: 'Failed to scrape options data', 
+      details: err?.message,
+      source: 'scraped-error'
+    });
+  }
+});
+
 // RF Analysis endpoint
 app.get('/api/analyze-rf/:symbol', async (req, res) => {
   const symbol = toUpperNoSpaces(req.params.symbol);
