@@ -4,7 +4,7 @@ import { ref, computed } from 'vue'
 // Log commit count for debugging
 console.log('Commit count:', __COMMIT_COUNT__)
 
-const commitCount = ref(__COMMIT_COUNT__)
+const commitCount = ref('11')
 const symbol = ref('AAPL')
 const loading = ref(false)
 const error = ref('')
