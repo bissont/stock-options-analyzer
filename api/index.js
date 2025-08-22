@@ -959,44 +959,127 @@ app.get('/api/all-options/:symbol', async (req, res) => {
           continue;
         }
 
-        // Process calls
-        const calls = (opt.calls || []).map(call => ({
-          contractSymbol: call.contractSymbol,
-          strike: call.strike,
-          lastPrice: call.lastPrice,
-          bid: call.bid,
-          ask: call.ask,
-          change: call.change,
-          percentChange: call.percentChange,
-          volume: call.volume,
-          openInterest: call.openInterest,
-          impliedVolatility: call.impliedVolatility,
-          inTheMoney: call.inTheMoney
-        }));
+        const daysToExpiry = (expDate.getTime() - Date.now()) / (1000 * 3600 * 24);
+        const timeToExpiry = daysToExpiry / 365.0;
+        
+        // Get or create RF model for this symbol
+        let model = null;
+        if (trainedModels[symbol]) {
+          model = trainedModels[symbol].model;
+        } else {
+          // Create a simple model if none exists (use historical data if available)
+          try {
+            const endDate = new Date();
+            const startDate = new Date();
+            startDate.setFullYear(endDate.getFullYear() - 1);
+            
+            const historicalData = await yf.historical(symbol, {
+              period1: startDate,
+              period2: endDate,
+              interval: '1d'
+            });
+            
+            if (historicalData && historicalData.length >= 100) {
+              const { features, targets } = generateTrainingData(symbol, historicalData);
+              const rfModel = new SimpleRandomForest(120, 10, 5);
+              rfModel.train(features, targets);
+              
+              const predictions = rfModel.predict(features);
+              const mae = predictions.reduce((sum, pred, i) => sum + Math.abs(pred - targets[i]), 0) / predictions.length;
+              const variance = targets.reduce((sum, t) => sum + (t - targets.reduce((a, b) => a + b) / targets.length) ** 2, 0) / targets.length;
+              const mse = predictions.reduce((sum, pred, i) => sum + (pred - targets[i]) ** 2, 0) / predictions.length;
+              const r2 = 1 - (mse / variance);
+              
+              trainedModels[symbol] = { model: rfModel, stats: { mae, r2 } };
+              model = rfModel;
+              console.log(`Trained RF model for ${symbol} in all-options endpoint`);
+            }
+          } catch (e) {
+            console.warn(`Could not train RF model for ${symbol}: ${e.message}`);
+          }
+        }
 
-        // Process puts
-        const puts = (opt.puts || []).map(put => ({
-          contractSymbol: put.contractSymbol,
-          strike: put.strike,
-          lastPrice: put.lastPrice,
-          bid: put.bid,
-          ask: put.ask,
-          change: put.change,
-          percentChange: put.percentChange,
-          volume: put.volume,
-          openInterest: put.openInterest,
-          impliedVolatility: put.impliedVolatility,
-          inTheMoney: put.inTheMoney
-        }));
+        // Process calls with additional calculations
+        const calls = (opt.calls || []).map(call => {
+          const bid = call.bid || 0;
+          const ask = call.ask || 0;
+          const mid = (bid + ask) / 2;
+          const premium = mid > 0 ? mid : (call.lastPrice || 0);
+          
+          // Calculate OTM percentage
+          const otmPercent = call.strike > currentPrice ? 
+            ((call.strike - currentPrice) / currentPrice * 100).toFixed(2) : '0.00';
+          
+          // Calculate return percentage (premium as % of stock price)
+          const returnPercent = premium > 0 && currentPrice > 0 ? 
+            (premium / currentPrice * 100).toFixed(3) : '0.000';
+          
+          // Calculate annualized yield
+          const months = Math.max(1, Math.ceil(daysToExpiry / 30));
+          const annualYield = returnPercent > 0 ? 
+            (parseFloat(returnPercent) * (12 / months)).toFixed(1) : '0.0';
+          
+          // Calculate RF assignment probability
+          let assignmentProbability = '0.0';
+          if (model && premium > 0) {
+            try {
+              const iv = call.impliedVolatility || 0.25;
+              const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
+              const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
+              
+              // RF prediction features
+              const features = [
+                currentPrice / call.strike, // moneyness
+                daysToExpiry,
+                iv,
+                delta,
+                (call.strike - currentPrice) / currentPrice, // otm percent
+                (call.volume || 0) / 1_000_000, // volume in millions
+                bsProbs.enhanced
+              ];
+              
+              let rfProb = bsProbs.enhanced;
+              try {
+                rfProb = Math.max(0, Math.min(1, model.predict([features])[0]));
+              } catch (e) {
+                console.warn(`RF prediction failed for ${call.strike}: ${e.message}`);
+              }
+              
+              // Blended probability: RF + BS with market adjustments
+              let blendedProb = (rfProb * 0.7) + (bsProbs.enhanced * 0.3);
+              blendedProb = Math.max(0, Math.min(1, blendedProb));
+              
+              assignmentProbability = (blendedProb * 100).toFixed(1);
+            } catch (e) {
+              console.warn(`Error calculating assignment probability for ${call.strike}: ${e.message}`);
+            }
+          }
 
-        // Sort by strike price
+          return {
+            contractSymbol: call.contractSymbol,
+            strike: call.strike,
+            lastPrice: call.lastPrice,
+            bid: call.bid,
+            ask: call.ask,
+            change: call.change,
+            percentChange: call.percentChange,
+            volume: call.volume,
+            openInterest: call.openInterest,
+            impliedVolatility: call.impliedVolatility,
+            inTheMoney: call.inTheMoney,
+            otmPercent: otmPercent,
+            returnPercent: returnPercent,
+            annualYield: annualYield,
+            assignmentProbability: assignmentProbability
+          };
+        });
+
+        // Sort calls by strike price
         calls.sort((a, b) => a.strike - b.strike);
-        puts.sort((a, b) => a.strike - b.strike);
 
         results.push({
           expiration: Math.floor((opt.expirationDate?.getTime?.() || expDate.getTime()) / 1000),
-          calls: calls,
-          puts: puts
+          calls: calls
         });
 
       } catch (e) {

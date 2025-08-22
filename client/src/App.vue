@@ -64,68 +64,43 @@ async function fetchAllOptions() {
           ({{ Math.round((expiration.expiration * 1000 - Date.now()) / (1000 * 3600 * 24)) }} DTE)
         </h3>
         
-        <div class="options-grid">
-          <div class="calls-section">
-            <h4>Calls ({{ expiration.calls?.length || 0 }})</h4>
-            <div v-if="expiration.calls?.length" class="options-table-container">
-              <table class="options-table">
-                <thead>
-                  <tr>
-                    <th>Strike</th>
-                    <th>Last</th>
-                    <th>Bid</th>
-                    <th>Ask</th>
-                    <th>Volume</th>
-                    <th>OI</th>
-                    <th>IV</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="call in expiration.calls" :key="call.contractSymbol">
-                    <td>${{ call.strike }}</td>
-                    <td>${{ call.lastPrice?.toFixed(2) || '--' }}</td>
-                    <td>${{ call.bid?.toFixed(2) || '--' }}</td>
-                    <td>${{ call.ask?.toFixed(2) || '--' }}</td>
-                    <td>{{ call.volume?.toLocaleString() || 0 }}</td>
-                    <td>{{ call.openInterest?.toLocaleString() || 0 }}</td>
-                    <td>{{ (call.impliedVolatility * 100)?.toFixed(1) || '--' }}%</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div v-else class="no-data">No call options available</div>
+        <div class="calls-section">
+          <h4>Call Options ({{ expiration.calls?.length || 0 }})</h4>
+          <div v-if="expiration.calls?.length" class="options-table-container">
+            <table class="options-table">
+              <thead>
+                <tr>
+                  <th>Strike</th>
+                  <th>Last</th>
+                  <th>Bid</th>
+                  <th>Ask</th>
+                  <th>OTM %</th>
+                  <th>Return %</th>
+                  <th>Annual Yield</th>
+                  <th>RF Assign %</th>
+                  <th>Volume</th>
+                  <th>OI</th>
+                  <th>IV</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="call in expiration.calls" :key="call.contractSymbol">
+                  <td>${{ call.strike }}</td>
+                  <td>${{ call.lastPrice?.toFixed(2) || '--' }}</td>
+                  <td>${{ call.bid?.toFixed(2) || '--' }}</td>
+                  <td>${{ call.ask?.toFixed(2) || '--' }}</td>
+                  <td>{{ call.otmPercent || '--' }}%</td>
+                  <td>{{ call.returnPercent || '--' }}%</td>
+                  <td>{{ call.annualYield || '--' }}%</td>
+                  <td>{{ call.assignmentProbability || '--' }}%</td>
+                  <td>{{ call.volume?.toLocaleString() || 0 }}</td>
+                  <td>{{ call.openInterest?.toLocaleString() || 0 }}</td>
+                  <td>{{ (call.impliedVolatility * 100)?.toFixed(1) || '--' }}%</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-          
-          <div class="puts-section">
-            <h4>Puts ({{ expiration.puts?.length || 0 }})</h4>
-            <div v-if="expiration.puts?.length" class="options-table-container">
-              <table class="options-table">
-                <thead>
-                  <tr>
-                    <th>Strike</th>
-                    <th>Last</th>
-                    <th>Bid</th>
-                    <th>Ask</th>
-                    <th>Volume</th>
-                    <th>OI</th>
-                    <th>IV</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="put in expiration.puts" :key="put.contractSymbol">
-                    <td>${{ put.strike }}</td>
-                    <td>${{ put.lastPrice?.toFixed(2) || '--' }}</td>
-                    <td>${{ put.bid?.toFixed(2) || '--' }}</td>
-                    <td>${{ put.ask?.toFixed(2) || '--' }}</td>
-                    <td>{{ put.volume?.toLocaleString() || 0 }}</td>
-                    <td>{{ put.openInterest?.toLocaleString() || 0 }}</td>
-                    <td>{{ (put.impliedVolatility * 100)?.toFixed(1) || '--' }}%</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div v-else class="no-data">No put options available</div>
-          </div>
+          <div v-else class="no-data">No call options available</div>
         </div>
       </div>
     </section>
@@ -221,36 +196,16 @@ async function fetchAllOptions() {
   color: #374151;
 }
 
-.options-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0;
-}
-
-.calls-section, .puts-section {
-  border-right: 1px solid #e5e7eb;
-}
-
-.puts-section {
-  border-right: none;
-}
-
-.calls-section h4, .puts-section h4 {
-  margin: 0;
-  padding: 0.75rem 1rem;
-  background: #f3f4f6;
-  color: #374151;
-  font-weight: 600;
+.calls-section {
+  width: 100%;
 }
 
 .calls-section h4 {
+  margin: 0;
+  padding: 0.75rem 1rem;
   background: #ecfdf5;
   color: #047857;
-}
-
-.puts-section h4 {
-  background: #fef2f2;
-  color: #dc2626;
+  font-weight: 600;
 }
 
 .options-table-container {
@@ -307,13 +262,8 @@ h1 {
 }
 
 @media (max-width: 768px) {
-  .options-grid {
-    grid-template-columns: 1fr;
-  }
-  
-  .calls-section {
-    border-right: none;
-    border-bottom: 1px solid #e5e7eb;
+  .options-table-container {
+    max-height: none;
   }
 }
 </style>
