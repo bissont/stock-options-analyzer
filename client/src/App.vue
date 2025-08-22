@@ -42,7 +42,7 @@ async function runRFAnalysis() {
 
 <template>
   <div class="container">
-    <h1>Tim's Options Analyzer</h1>
+    <h1>Tim's Options Analyzer - v{{ __COMMIT_COUNT__ }}</h1>
     <form @submit.prevent="runRFAnalysis" class="form">
       <input v-model="symbol" placeholder="Ticker (e.g. AAPL)" />
       <button type="submit" :disabled="loading">
