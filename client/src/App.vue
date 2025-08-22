@@ -1,6 +1,10 @@
 <script setup>
 import { ref, computed } from 'vue'
 
+// Log commit count for debugging
+console.log('Commit count:', __COMMIT_COUNT__)
+
+const commitCount = ref(__COMMIT_COUNT__)
 const symbol = ref('AAPL')
 const loading = ref(false)
 const error = ref('')
@@ -42,7 +46,7 @@ async function runRFAnalysis() {
 
 <template>
   <div class="container">
-    <h1>Tim's Options Analyzer - v{{ __COMMIT_COUNT__ }}</h1>
+    <h1>Tim's Options Analyzer - v{{ commitCount }}</h1>
     <form @submit.prevent="runRFAnalysis" class="form">
       <input v-model="symbol" placeholder="Ticker (e.g. AAPL)" />
       <button type="submit" :disabled="loading">
@@ -56,7 +60,7 @@ async function runRFAnalysis() {
       <h2>🤖 Professional Covered Call Analysis for {{ rfAnalysis.symbol }}</h2>
       <div class="rf-stats">
         <div><strong>Current Price:</strong> ${{ rfAnalysis.currentPrice?.toFixed(2) }}</div>
-        <div><strong>Strategy:</strong> 3 nearest expirations around {{ rfAnalysis.dteRange?.target }} DTE ({{ rfAnalysis.dteRange?.min }}-{{ rfAnalysis.dteRange?.max }} optimal)</div>
+        <div><strong>Strategy:</strong> One expiration from 20s, 30s, and 40s DTE ranges ({{ rfAnalysis.dteRange?.min }}-{{ rfAnalysis.dteRange?.max }} optimal)</div>
         <div><strong>IV Rank:</strong> 
           <span v-if="rfAnalysis.ivRankData && rfAnalysis.ivRankData.ivRank !== null">
             {{ rfAnalysis.ivRankData.ivRank?.toFixed(1) }}%

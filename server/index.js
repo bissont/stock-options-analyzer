@@ -4,7 +4,6 @@ const cors = require('cors');
 const yf = require('yahoo-finance2').default;
 
 const app = express();
-const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
@@ -39,8 +38,29 @@ function normalCDF(x) {
   return 0.5 * (1.0 + sign * y);
 }
 
-function calculateAssignmentProbability(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility) {
-  if (timeToExpiry <= 0) return strikePrice <= currentPrice ? 1 : 0;
+function calculateDelta(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, optionType = 'call') {
+  if (timeToExpiry <= 0) return optionType === 'call' ? (currentPrice > strikePrice ? 1 : 0) : (currentPrice < strikePrice ? -1 : 0);
+  
+  const S = currentPrice;
+  const K = strikePrice;
+  const T = timeToExpiry;
+  const r = riskFreeRate;
+  const sigma = volatility;
+  
+  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+  
+  if (optionType === 'call') {
+    return normalCDF(d1);
+  } else {
+    return normalCDF(d1) - 1;
+  }
+}
+
+function calculateAssignmentProbability(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, marketDelta = null) {
+  if (timeToExpiry <= 0) return { 
+    original: strikePrice <= currentPrice ? 1 : 0,
+    enhanced: strikePrice <= currentPrice ? 1 : 0
+  };
   
   const S = currentPrice;
   const K = strikePrice;
@@ -51,14 +71,52 @@ function calculateAssignmentProbability(currentPrice, strikePrice, timeToExpiry,
   const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
   const d2 = d1 - sigma * Math.sqrt(T);
   
-  // N(d2) approximates probability of finishing ITM
-  return normalCDF(d2);
+  // Original Black-Scholes probability
+  const originalProb = normalCDF(d2);
+  
+  // Enhanced probability with market corrections
+  let enhancedProb = originalProb;
+  
+  // 1. Delta-based probability adjustment (if market delta is available)
+  if (marketDelta !== null && marketDelta !== undefined) {
+    // For calls: delta approximates ITM probability
+    const deltaProb = Math.abs(marketDelta);
+    // Weighted combination: 70% BS, 30% market delta
+    enhancedProb = (originalProb * 0.7) + (deltaProb * 0.3);
+  }
+  
+  // 2. Implied volatility adjustment
+  const defaultVol = 0.25; // 25% baseline volatility
+  const volAdjustment = Math.min(2.0, Math.max(0.5, sigma / defaultVol)); // Cap between 0.5x and 2x
+  enhancedProb = enhancedProb * volAdjustment;
+  
+  // 3. Time decay acceleration for very short-term options
+  if (T < (7/365)) { // Less than 1 week
+    const timeAcceleration = 1 + (0.1 * (7/365 - T) / (7/365)); // Up to 10% increase
+    enhancedProb = enhancedProb * timeAcceleration;
+  }
+  
+  // 4. Moneyness adjustment
+  const moneyness = S / K;
+  if (moneyness > 1.05) { // More than 5% ITM
+    enhancedProb = enhancedProb * 1.1; // Increase probability
+  } else if (moneyness > 0.95 && moneyness <= 1.05) { // Near the money
+    enhancedProb = enhancedProb * 1.05; // Slight increase
+  }
+  
+  // Ensure probability stays between 0 and 1
+  enhancedProb = Math.max(0, Math.min(1, enhancedProb));
+  
+  return {
+    original: originalProb,
+    enhanced: enhancedProb
+  };
 }
 
 function calculateGoalBasedScore(premium, assignmentProbability, strike, currentPrice, daysToExpiry) {
-  // Target: 0.25% weekly return or 0.5% bi-weekly return
-  const weeklyTarget = 0.0025; // 0.25%
-  const biweeklyTarget = 0.005; // 0.5%
+  // Target: 0.1% weekly return or 0.2% bi-weekly return
+  const weeklyTarget = 0.001; // 0.1%
+  const biweeklyTarget = 0.002; // 0.2%
   
   // Calculate return as percentage of stock price (for cash-secured puts or covered calls)
   const returnPercent = premium / currentPrice;
@@ -94,6 +152,7 @@ function calculateGoalBasedScore(premium, assignmentProbability, strike, current
   return baseScore * highProbabilityPenalty;
 }
 
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({ ok: true });
 });
@@ -146,51 +205,6 @@ app.get('/api/quote/:symbol', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch quote', details: err?.message });
-  }
-});
-
-// Get options for the current week (nearest expiration within 7 days)
-app.get('/api/options/:symbol', async (req, res) => {
-  const symbol = toUpperNoSpaces(req.params.symbol);
-  if (!symbol) {
-    return res.status(400).json({ error: 'Missing symbol' });
-  }
-  try {
-    const first = await yf.options(symbol);
-    const expirations = first?.expirationDates || [];
-    if (!expirations.length) return res.status(404).json({ error: 'No expirations available' });
-    const nowMs = Date.now();
-    const oneWeekMs = 7 * 24 * 3600 * 1000;
-    const withinWeek = expirations.filter((d) => d.getTime() >= nowMs && d.getTime() <= nowMs + oneWeekMs);
-    let target = withinWeek.length ? new Date(Math.min(...withinWeek.map((d)=>d.getTime()))) : new Date(Math.min(...expirations.map((d)=>d.getTime())));
-
-    const chain = await yf.options(symbol, { date: target });
-    const opt = chain?.options?.[0];
-    if (!opt) return res.status(404).json({ error: 'No options for selected expiration' });
-
-    const mapOption = (o) => ({
-      contractSymbol: o.contractSymbol,
-      strike: o.strike,
-      lastPrice: o.lastPrice,
-      bid: o.bid,
-      ask: o.ask,
-      change: o.change,
-      percentChange: o.percentChange,
-      volume: o.volume,
-      openInterest: o.openInterest,
-      impliedVolatility: o.impliedVolatility,
-      inTheMoney: o.inTheMoney,
-    });
-
-    res.json({
-      symbol: chain?.underlyingSymbol || symbol,
-      expiration: Math.floor((opt.expirationDate?.getTime?.() || target.getTime())/1000),
-      hasMiniOptions: opt.hasMiniOptions,
-      calls: (opt.calls || []).map(mapOption),
-      puts: (opt.puts || []).map(mapOption),
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch options', details: err?.message });
   }
 });
 
@@ -251,26 +265,35 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
         const riskFreeRate = 0.045; // Approximate current 10-year treasury rate
         const volatility = o.impliedVolatility || 0.25; // Use option's IV or default to 25%
         
-        const assignmentProb = calculateAssignmentProbability(
+        // Calculate theoretical delta for market comparison
+        const theoreticalDelta = calculateDelta(currentPrice, o.strike, timeToExpiry, riskFreeRate, volatility, 'call');
+        
+        // Get assignment probabilities (both original and enhanced)
+        const assignmentProbs = calculateAssignmentProbability(
           currentPrice, 
           o.strike, 
           timeToExpiry, 
           riskFreeRate, 
-          volatility
+          volatility,
+          theoreticalDelta // Use calculated delta as market delta approximation
         );
         
         const premium = (o.bid && o.ask) ? (o.bid + o.ask) / 2 : (o.lastPrice || 0); // Midpoint or last price
         const returnPercent = premium > 0 ? ((premium / currentPrice) * 100).toFixed(3) : '0.000'; // Return as % of stock price
-        const goalScore = calculateGoalBasedScore(premium, assignmentProb * 100, o.strike, currentPrice, daysToExpiry);
         
-        // Calculate return/assignment ratio for all options
-        const returnAssignmentRatio = premium > 0 && assignmentProb > 0 ? 
-          (((premium / currentPrice) * 100) / (assignmentProb * 100)).toFixed(3) : 'N/A';
+        // Use enhanced probability for goal scoring
+        const goalScore = calculateGoalBasedScore(premium, assignmentProbs.enhanced * 100, o.strike, currentPrice, daysToExpiry);
+        
+        // Calculate return/assignment ratio for both methods
+        const originalRatio = premium > 0 && assignmentProbs.original > 0 ? 
+          (((premium / currentPrice) * 100) / (assignmentProbs.original * 100)).toFixed(3) : 'N/A';
+        const enhancedRatio = premium > 0 && assignmentProbs.enhanced > 0 ? 
+          (((premium / currentPrice) * 100) / (assignmentProbs.enhanced * 100)).toFixed(3) : 'N/A';
         
         // Weekly vs bi-weekly target check  
         const weeklyReturn = premium > 0 ? (premium / currentPrice) * 100 : 0;
-        const meetsWeeklyTarget = daysToExpiry <= 8 && weeklyReturn >= 0.25;
-        const meetsBiweeklyTarget = daysToExpiry <= 16 && weeklyReturn >= 0.5;
+        const meetsWeeklyTarget = daysToExpiry <= 8 && weeklyReturn >= 0.1;
+        const meetsBiweeklyTarget = daysToExpiry <= 16 && weeklyReturn >= 0.2;
         const meetsTarget = meetsWeeklyTarget || meetsBiweeklyTarget;
         const targetType = meetsWeeklyTarget ? 'weekly' : (meetsBiweeklyTarget ? 'bi-weekly' : 'none');
         
@@ -287,11 +310,14 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
           impliedVolatility: o.impliedVolatility,
           inTheMoney: o.inTheMoney,
           otmPercent: ((o.strike - currentPrice) / currentPrice * 100).toFixed(2),
-          assignmentProbability: (assignmentProb * 100).toFixed(1),
+          assignmentProbability: (assignmentProbs.original * 100).toFixed(1), // Original BS probability
+          assignmentProbabilityEnhanced: (assignmentProbs.enhanced * 100).toFixed(1), // Enhanced probability
+          delta: (theoreticalDelta * 100).toFixed(1), // Theoretical delta
           premium: premium.toFixed(2),
           returnPercent: returnPercent,
-          goalScore: goalScore > 0 ? goalScore.toFixed(3) : returnAssignmentRatio,
-          returnAssignmentRatio: returnAssignmentRatio,
+          goalScore: goalScore > 0 ? goalScore.toFixed(3) : enhancedRatio,
+          returnAssignmentRatio: originalRatio, // Original ratio
+          returnAssignmentRatioEnhanced: enhancedRatio, // Enhanced ratio
           meetsTarget: meetsTarget,
           targetType: targetType,
           daysToExpiry: Math.round(daysToExpiry)
@@ -334,8 +360,565 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
   }
 });
 
+// Random Forest Analysis Implementation
+const trainedModels = {};
+
+class SimpleRandomForest {
+  constructor(nTrees = 120, maxDepth = 10, minSamplesSplit = 5) {
+    this.nTrees = nTrees;
+    this.maxDepth = maxDepth;
+    this.minSamplesSplit = minSamplesSplit;
+    this.trees = [];
+    this.issTrained = false;
+  }
+
+  // Simple decision tree node
+  static createNode(samples, targets, depth, maxDepth, minSamplesSplit) {
+    if (depth >= maxDepth || samples.length < minSamplesSplit) {
+      return { prediction: targets.reduce((a, b) => a + b) / targets.length, isLeaf: true };
+    }
+
+    // Find best split (simplified - just try random features and thresholds)
+    let bestScore = Infinity;
+    let bestSplit = null;
+    const nFeatures = samples[0].length;
+    
+    for (let trial = 0; trial < Math.min(10, nFeatures * 3); trial++) {
+      const featureIdx = Math.floor(Math.random() * nFeatures);
+      const values = samples.map(s => s[featureIdx]).sort((a, b) => a - b);
+      const threshold = values[Math.floor(Math.random() * values.length)];
+      
+      const leftIndices = [];
+      const rightIndices = [];
+      
+      for (let i = 0; i < samples.length; i++) {
+        if (samples[i][featureIdx] <= threshold) {
+          leftIndices.push(i);
+        } else {
+          rightIndices.push(i);
+        }
+      }
+      
+      if (leftIndices.length === 0 || rightIndices.length === 0) continue;
+      
+      const leftTargets = leftIndices.map(i => targets[i]);
+      const rightTargets = rightIndices.map(i => targets[i]);
+      const leftMean = leftTargets.reduce((a, b) => a + b) / leftTargets.length;
+      const rightMean = rightTargets.reduce((a, b) => a + b) / rightTargets.length;
+      
+      const score = leftTargets.reduce((sum, t) => sum + (t - leftMean) ** 2, 0) + 
+                   rightTargets.reduce((sum, t) => sum + (t - rightMean) ** 2, 0);
+      
+      if (score < bestScore) {
+        bestScore = score;
+        bestSplit = { featureIdx, threshold, leftIndices, rightIndices };
+      }
+    }
+    
+    if (!bestSplit) {
+      return { prediction: targets.reduce((a, b) => a + b) / targets.length, isLeaf: true };
+    }
+    
+    const leftSamples = bestSplit.leftIndices.map(i => samples[i]);
+    const leftTargets = bestSplit.leftIndices.map(i => targets[i]);
+    const rightSamples = bestSplit.rightIndices.map(i => samples[i]);
+    const rightTargets = bestSplit.rightIndices.map(i => targets[i]);
+    
+    return {
+      featureIdx: bestSplit.featureIdx,
+      threshold: bestSplit.threshold,
+      left: SimpleRandomForest.createNode(leftSamples, leftTargets, depth + 1, maxDepth, minSamplesSplit),
+      right: SimpleRandomForest.createNode(rightSamples, rightTargets, depth + 1, maxDepth, minSamplesSplit),
+      isLeaf: false
+    };
+  }
+
+  train(features, targets) {
+    for (let i = 0; i < this.nTrees; i++) {
+      // Bootstrap sampling
+      const bootstrapSize = Math.floor(features.length * 0.8);
+      const bootstrapIndices = [];
+      for (let j = 0; j < bootstrapSize; j++) {
+        bootstrapIndices.push(Math.floor(Math.random() * features.length));
+      }
+      
+      const bootstrapFeatures = bootstrapIndices.map(idx => features[idx]);
+      const bootstrapTargets = bootstrapIndices.map(idx => targets[idx]);
+      
+      const tree = SimpleRandomForest.createNode(
+        bootstrapFeatures, 
+        bootstrapTargets, 
+        0, 
+        this.maxDepth, 
+        this.minSamplesSplit
+      );
+      
+      this.trees.push(tree);
+    }
+    this.isTrained = true;
+  }
+
+  static predictSingle(tree, sample) {
+    if (tree.isLeaf) return tree.prediction;
+    if (sample[tree.featureIdx] <= tree.threshold) {
+      return SimpleRandomForest.predictSingle(tree.left, sample);
+    } else {
+      return SimpleRandomForest.predictSingle(tree.right, sample);
+    }
+  }
+
+  predict(samples) {
+    if (!this.isTrained) throw new Error('Model not trained');
+    
+    return samples.map(sample => {
+      const predictions = this.trees.map(tree => 
+        SimpleRandomForest.predictSingle(tree, sample)
+      );
+      return predictions.reduce((a, b) => a + b) / predictions.length;
+    });
+  }
+}
+
+// Generate training data for RF model
+function generateTrainingData(symbol, historicalData) {
+  const features = [];
+  const targets = [];
+  
+  for (let i = 0; i < historicalData.length; i++) {
+    const price = historicalData[i].close;
+    
+    for (const dte of [1, 3, 7, 14, 21]) {
+      for (const otmFrac of [0.02, 0.05, 0.10, 0.15]) {
+        const strike = price * (1 + otmFrac);
+        
+        // Calculate simple volatility (last 20 days if available)
+        let vol = 0.25; // default
+        if (i >= 20) {
+          const returns = [];
+          for (let j = Math.max(0, i - 19); j < i; j++) {
+            returns.push(Math.log(historicalData[j + 1].close / historicalData[j].close));
+          }
+          const mean = returns.reduce((a, b) => a + b) / returns.length;
+          const variance = returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / returns.length;
+          vol = Math.sqrt(variance * 252); // Annualized volatility
+        }
+        
+        const T = dte / 365.0;
+        const r = 0.045;
+        const delta = calculateDelta(price, strike, T, r, vol);
+        const bsProb = calculateAssignmentProbability(price, strike, T, r, vol, delta).enhanced;
+        
+        // Add noise to create training target
+        const noise = (Math.random() - 0.5) * 0.1;
+        const target = Math.max(0, Math.min(1, bsProb + noise));
+        
+        features.push([
+          price / strike, // moneyness
+          dte, // days to expiry
+          vol, // volatility
+          delta, // delta
+          otmFrac, // otm percent
+          Math.random() * 2, // volume (randomized for training)
+          bsProb // bs probability
+        ]);
+        
+        targets.push(target);
+      }
+    }
+  }
+  
+  return { features, targets };
+}
+
+// Calculate IV Rank for a symbol (simplified version)
+async function calculateIVRank(symbol) {
+  try {
+    console.log(`Calculating IV rank for ${symbol}...`);
+    
+    // Try multiple approaches to get current IV
+    let currentIV = null;
+    
+    // Approach 1: Try summaryDetail
+    try {
+      const quote = await yf.quoteSummary(symbol, { modules: ['summaryDetail'] });
+      currentIV = quote?.summaryDetail?.impliedVolatility;
+      console.log(`SummaryDetail IV for ${symbol}:`, currentIV);
+    } catch (e) {
+      console.warn(`Failed to get IV from summaryDetail:`, e.message);
+    }
+    
+    // Approach 2: Try to get IV from options chain
+    if (!currentIV) {
+      try {
+        const optionsBase = await yf.options(symbol);
+        if (optionsBase?.expirationDates?.[0]) {
+          const chain = await yf.options(symbol, { date: optionsBase.expirationDates[0] });
+          const atm = chain?.options?.[0]?.calls?.find(c => c.inTheMoney === false);
+          if (atm?.impliedVolatility) {
+            currentIV = atm.impliedVolatility;
+            console.log(`Options chain IV for ${symbol}:`, currentIV);
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to get IV from options chain:`, e.message);
+      }
+    }
+    
+    if (!currentIV) {
+      console.warn(`No IV data available for ${symbol}`);
+      return null;
+    }
+    
+    // Get historical price data to estimate historical IV range
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setFullYear(endDate.getFullYear() - 1); // 1 year lookback
+    
+    const historicalData = await yf.historical(symbol, {
+      period1: startDate,
+      period2: endDate,
+      interval: '1d'
+    });
+    
+    if (!historicalData || historicalData.length < 100) return null;
+    
+    // Calculate historical volatility as proxy for IV range
+    const returns = [];
+    for (let i = 1; i < historicalData.length; i++) {
+      const return_ = Math.log(historicalData[i].close / historicalData[i-1].close);
+      returns.push(return_);
+    }
+    
+    // Calculate rolling 20-day volatilities to approximate IV range
+    const rollingVols = [];
+    for (let i = 19; i < returns.length; i++) {
+      const windowReturns = returns.slice(i-19, i+1);
+      const mean = windowReturns.reduce((a, b) => a + b) / windowReturns.length;
+      const variance = windowReturns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / windowReturns.length;
+      const vol = Math.sqrt(variance * 252); // Annualized
+      rollingVols.push(vol);
+    }
+    
+    if (rollingVols.length === 0) return null;
+    
+    const minVol = Math.min(...rollingVols);
+    const maxVol = Math.max(...rollingVols);
+    
+    // Calculate IV rank (0-100%)
+    const ivRank = ((currentIV - minVol) / (maxVol - minVol)) * 100;
+    
+    const result = {
+      currentIV: currentIV,
+      ivRank: Math.max(0, Math.min(100, ivRank)),
+      minIV: minVol,
+      maxIV: maxVol
+    };
+    
+    console.log(`IV Rank calculation for ${symbol}:`, result);
+    return result;
+    
+  } catch (error) {
+    console.warn(`Could not calculate IV rank for ${symbol}:`, error.message);
+    return null;
+  }
+}
+
+// Get earnings date for a symbol
+async function getEarningsDate(symbol) {
+  try {
+    // Try to get earnings calendar from Yahoo Finance
+    const quote = await yf.quoteSummary(symbol, { modules: ['calendarEvents'] });
+    const earnings = quote?.calendarEvents?.earnings;
+    
+    if (earnings && earnings.earningsDate && earnings.earningsDate.length > 0) {
+      // Yahoo Finance sometimes provides date ranges, take the first (earliest) date
+      const earningsDate = earnings.earningsDate[0];
+      return new Date(earningsDate);
+    }
+    
+    // Fallback: try to get from company financials
+    const financials = await yf.quoteSummary(symbol, { modules: ['financialData'] });
+    // This is a fallback - real implementation might need different approach
+    
+    return null;
+  } catch (error) {
+    console.warn(`Could not fetch earnings date for ${symbol}:`, error.message);
+    return null;
+  }
+}
+
+// RF Analysis endpoint
+app.get('/api/analyze-rf/:symbol', async (req, res) => {
+  const symbol = toUpperNoSpaces(req.params.symbol);
+  if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
+  
+  try {
+    console.log(`Starting RF analysis for ${symbol}...`);
+    
+    // Get historical data for training (1 year)
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setFullYear(endDate.getFullYear() - 1);
+    
+    const historicalData = await yf.historical(symbol, {
+      period1: startDate,
+      period2: endDate,
+      interval: '1d'
+    });
+    
+    if (!historicalData || historicalData.length < 100) {
+      return res.status(400).json({ error: 'Insufficient historical data for RF training' });
+    }
+    
+    // Train or get cached model
+    if (!trainedModels[symbol]) {
+      console.log(`Training RF model for ${symbol}...`);
+      const { features, targets } = generateTrainingData(symbol, historicalData);
+      
+      const model = new SimpleRandomForest(120, 10, 5);
+      model.train(features, targets);
+      
+      // Calculate simple accuracy metrics on training data
+      const predictions = model.predict(features);
+      const mae = predictions.reduce((sum, pred, i) => sum + Math.abs(pred - targets[i]), 0) / predictions.length;
+      const variance = targets.reduce((sum, t) => sum + (t - targets.reduce((a, b) => a + b) / targets.length) ** 2, 0) / targets.length;
+      const mse = predictions.reduce((sum, pred, i) => sum + (pred - targets[i]) ** 2, 0) / predictions.length;
+      const r2 = 1 - (mse / variance);
+      
+      trainedModels[symbol] = { model, stats: { mae, r2 } };
+      console.log(`RF model trained for ${symbol}. MAE=${mae.toFixed(4)}, R2=${r2.toFixed(4)}`);
+    }
+    
+    const { model, stats } = trainedModels[symbol];
+    
+    // Get earnings date and IV rank
+    const [earningsDate, ivRankData] = await Promise.all([
+      getEarningsDate(symbol),
+      calculateIVRank(symbol)
+    ]);
+    
+    // Get current options data
+    const quote = await yf.quoteSummary(symbol, { modules: ['price'] });
+    const currentPrice = quote?.price?.regularMarketPrice;
+    if (!currentPrice) {
+      return res.status(400).json({ error: 'Unable to get current price' });
+    }
+    
+    const optionsBase = await yf.options(symbol);
+    const expirations = optionsBase?.expirationDates || [];
+    if (!expirations.length) {
+      return res.status(404).json({ error: 'No options available' });
+    }
+    
+    // Get expirations ensuring at least one in 20s, 30s, and 40s DTE (contiguous)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Get all future expirations with DTE calculations
+    const allFutureExpirations = expirations
+      .filter(exp => exp.getTime() >= today.getTime())
+      .map(exp => ({
+        date: exp,
+        dte: Math.round((exp.getTime() - Date.now()) / (1000 * 3600 * 24))
+      }))
+      .sort((a, b) => a.dte - b.dte); // Sort by DTE ascending
+    
+    // Find candidates for each DTE range
+    const range20s = allFutureExpirations.filter(exp => exp.dte >= 20 && exp.dte <= 29);
+    const range30s = allFutureExpirations.filter(exp => exp.dte >= 30 && exp.dte <= 39);
+    const range40s = allFutureExpirations.filter(exp => exp.dte >= 40 && exp.dte <= 49);
+    
+    const selectedExpirations = [];
+    
+    // Pick one from each range (closest to middle of range)
+    if (range20s.length > 0) {
+      const target = range20s.find(exp => exp.dte >= 24) || range20s[Math.floor(range20s.length / 2)];
+      selectedExpirations.push(target);
+    }
+    if (range30s.length > 0) {
+      const target = range30s.find(exp => exp.dte >= 34) || range30s[Math.floor(range30s.length / 2)];
+      selectedExpirations.push(target);
+    }
+    if (range40s.length > 0) {
+      const target = range40s.find(exp => exp.dte >= 44) || range40s[Math.floor(range40s.length / 2)];
+      selectedExpirations.push(target);
+    }
+    
+    // If we don't have all three ranges, try to fill with best available options
+    while (selectedExpirations.length < 3 && allFutureExpirations.length > selectedExpirations.length) {
+      const used = new Set(selectedExpirations.map(exp => exp.date.getTime()));
+      const remaining = allFutureExpirations.filter(exp => !used.has(exp.date.getTime()));
+      
+      // Prioritize expirations >= 20 DTE
+      const validRemaining = remaining.filter(exp => exp.dte >= 20);
+      const toAdd = validRemaining.length > 0 ? validRemaining[0] : remaining[0];
+      
+      if (toAdd) {
+        selectedExpirations.push(toAdd);
+      } else {
+        break;
+      }
+    }
+    
+    // Sort final selection chronologically and extract dates
+    const futureExpirations = selectedExpirations
+      .sort((a, b) => a.dte - b.dte)
+      .map(exp => exp.date);
+    
+    const otmLow = currentPrice * 1.001;
+    const otmHigh = currentPrice * 1.25; // 25% OTM limit like notebook
+    
+    const weeksData = [];
+    
+    for (const expDate of futureExpirations) {
+      try {
+        const chain = await yf.options(symbol, { date: expDate });
+        const opt = chain?.options?.[0];
+        if (!opt?.calls) continue;
+        
+        const daysToExpiry = (expDate.getTime() - Date.now()) / (1000 * 3600 * 24);
+        const timeToExpiry = daysToExpiry / 365.0;
+        
+        // Check if this expiration is in optimal DTE range (expanded to include 40s)
+        const isOptimalDTE = daysToExpiry >= 30 && daysToExpiry <= 49;
+        
+        // Check if earnings occurs before this expiration
+        let earningsWarning = null;
+        if (earningsDate && earningsDate.getTime() < expDate.getTime() && earningsDate.getTime() > Date.now()) {
+          const daysToEarnings = (earningsDate.getTime() - Date.now()) / (1000 * 3600 * 24);
+          earningsWarning = {
+            hasEarnings: true,
+            earningsDate: earningsDate.toISOString(),
+            daysToEarnings: Math.round(daysToEarnings)
+          };
+        }
+        
+        const processedOptions = [];
+        let bestOption = null;
+        
+        for (const call of opt.calls) {
+          if (call.strike < otmLow || call.strike > otmHigh) continue;
+          
+          // Minimum liquidity requirements
+          const minVol = daysToExpiry <= 16 ? 10 : 1;
+          const minOi = daysToExpiry <= 16 ? 50 : 10;
+          if ((call.volume || 0) < minVol || (call.openInterest || 0) < minOi) continue;
+          
+          const bid = call.bid || 0;
+          const ask = call.ask || 0;
+          if (bid <= 0 || ask <= 0) continue;
+          
+          const mid = (bid + ask) / 2;
+          const spreadPct = (ask - bid) / Math.max(mid, 1e-9);
+          if (spreadPct > 0.5) continue; // Skip wide spreads
+          
+          const iv = call.impliedVolatility || 0.25;
+          const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
+          const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
+          
+          // Get RF prediction
+          const features = [
+            currentPrice / call.strike, // moneyness
+            daysToExpiry,
+            iv,
+            delta,
+            (call.strike - currentPrice) / currentPrice, // otm percent
+            (call.volume || 0) / 1_000_000, // volume in millions
+            bsProbs.enhanced
+          ];
+          
+          let rfProb = bsProbs.enhanced;
+          try {
+            rfProb = Math.max(0, Math.min(1, model.predict([features])[0]));
+          } catch (e) {
+            console.warn(`RF prediction failed, using BS: ${e.message}`);
+          }
+          
+          // Blended probability: RF + BS with market adjustments
+          let blendedProb = (rfProb * 0.7) + (bsProbs.enhanced * 0.3); // 70% RF, 30% enhanced BS
+          
+          // Add market adjustments
+          const borrowFee = 0.0; // Default to 0 for now
+          blendedProb += 0.01 * (borrowFee / 10.0);
+          
+          const sentiment = 0.0; // Default to 0 for now  
+          blendedProb += 0.02 * sentiment;
+          
+          // Ensure probability stays within bounds
+          blendedProb = Math.max(0, Math.min(1, blendedProb));
+          
+          const otmFrac = (call.strike - currentPrice) / currentPrice;
+          if (otmFrac < 0.02 || (blendedProb * 100) > 25.0) continue; // Skip if too ITM or high assignment risk
+          
+          const returnPct = (mid / currentPrice) * 100;
+          
+          // Check return targets
+          const meetsWeeklyTarget = daysToExpiry <= 8 && returnPct >= 0.05;
+          const meetsBiweeklyTarget = daysToExpiry <= 16 && returnPct >= 0.10;
+          const meetsTarget = meetsWeeklyTarget || meetsBiweeklyTarget;
+          
+          if (daysToExpiry <= 16 && !meetsTarget) continue; // Skip if doesn't meet targets for short-term
+          
+          const months = Math.max(1, Math.ceil(daysToExpiry / 30));
+          const annualYield = returnPct * (12 / months);
+          
+          const optionData = {
+            strike: call.strike,
+            premium: mid.toFixed(2),
+            returnPercent: returnPct.toFixed(3),
+            annualYield: annualYield.toFixed(1),
+            otmPercent: (otmFrac * 100).toFixed(2),
+            assignmentProbability: (blendedProb * 100).toFixed(1),
+            openInterest: call.openInterest,
+            volume: call.volume,
+            daysToExpiry: Math.round(daysToExpiry)
+          };
+          
+          processedOptions.push(optionData);
+          
+          // Find best option (prefer farther OTM and lower blended probability)
+          if (!bestOption || (otmFrac > (bestOption.strike - currentPrice) / currentPrice && blendedProb < bestOption.assignmentProbability / 100)) {
+            bestOption = optionData;
+          }
+        }
+        
+        processedOptions.sort((a, b) => a.strike - b.strike);
+        
+        weeksData.push({
+          expiration: expDate.toISOString(),
+          daysToExpiry: Math.round(daysToExpiry),
+          isOptimalDTE: isOptimalDTE,
+          options: processedOptions,
+          bestOption: bestOption,
+          earningsWarning: earningsWarning
+        });
+        
+      } catch (e) {
+        console.warn(`Failed to process expiration ${expDate}: ${e.message}`);
+      }
+    }
+    
+    res.json({
+      symbol,
+      currentPrice,
+      modelStats: stats,
+      otmRange: { low: otmLow, high: otmHigh },
+      earningsDate: earningsDate ? earningsDate.toISOString() : null,
+      ivRankData: ivRankData,
+      dteRange: { target: 37.5, min: 30, max: 49 },
+      weeksData
+    });
+    
+  } catch (err) {
+    console.error(`RF analysis error for ${symbol}:`, err);
+    res.status(500).json({ error: 'RF analysis failed', details: err?.message });
+  }
+});
+
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
 
-
+// Export for Vercel
+module.exports = app;
