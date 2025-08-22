@@ -710,25 +710,55 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       return res.status(404).json({ error: 'No options available' });
     }
     
-    // Get the 3 nearest expirations around 30-45 DTE optimal range
+    // Get expirations ensuring at least one in 20s, 30s, and 40s DTE (contiguous)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const targetDTE = 37.5; // Middle of 30-45 range
-    const targetDate = new Date(today.getTime() + targetDTE * 24 * 60 * 60 * 1000);
     
-    // Get all future expirations and find the 3 closest to target date
+    // Get all future expirations with DTE calculations
     const allFutureExpirations = expirations
       .filter(exp => exp.getTime() >= today.getTime())
       .map(exp => ({
         date: exp,
-        distanceFromTarget: Math.abs(exp.getTime() - targetDate.getTime())
+        dte: Math.round((exp.getTime() - Date.now()) / (1000 * 3600 * 24))
       }))
-      .sort((a, b) => a.distanceFromTarget - b.distanceFromTarget)
-      .slice(0, 3) // Take only the 3 nearest
-      .map(item => item.date)
-      .sort((a, b) => a.getTime() - b.getTime()); // Sort chronologically
+      .sort((a, b) => a.dte - b.dte); // Sort by DTE ascending
     
-    const futureExpirations = allFutureExpirations;
+    // Find candidates for each DTE range
+    const range20s = allFutureExpirations.filter(exp => exp.dte >= 20 && exp.dte <= 29);
+    const range30s = allFutureExpirations.filter(exp => exp.dte >= 30 && exp.dte <= 39);
+    const range40s = allFutureExpirations.filter(exp => exp.dte >= 40 && exp.dte <= 49);
+    
+    const selectedExpirations = [];
+    
+    // Pick one from each range (closest to middle of range)
+    if (range20s.length > 0) {
+      const target = range20s.find(exp => exp.dte >= 24) || range20s[Math.floor(range20s.length / 2)];
+      selectedExpirations.push(target);
+    }
+    if (range30s.length > 0) {
+      const target = range30s.find(exp => exp.dte >= 34) || range30s[Math.floor(range30s.length / 2)];
+      selectedExpirations.push(target);
+    }
+    if (range40s.length > 0) {
+      const target = range40s.find(exp => exp.dte >= 44) || range40s[Math.floor(range40s.length / 2)];
+      selectedExpirations.push(target);
+    }
+    
+    // If we don't have all three ranges, fill gaps with nearest available expirations
+    while (selectedExpirations.length < 3 && allFutureExpirations.length > selectedExpirations.length) {
+      const used = new Set(selectedExpirations.map(exp => exp.date.getTime()));
+      const remaining = allFutureExpirations.filter(exp => !used.has(exp.date.getTime()));
+      if (remaining.length > 0) {
+        selectedExpirations.push(remaining[0]); // Add the nearest unused expiration
+      } else {
+        break;
+      }
+    }
+    
+    // Sort final selection chronologically and extract dates
+    const futureExpirations = selectedExpirations
+      .sort((a, b) => a.dte - b.dte)
+      .map(exp => exp.date);
     
     const otmLow = currentPrice * 1.001;
     const otmHigh = currentPrice * 1.25; // 25% OTM limit like notebook
@@ -744,8 +774,8 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
         const daysToExpiry = (expDate.getTime() - Date.now()) / (1000 * 3600 * 24);
         const timeToExpiry = daysToExpiry / 365.0;
         
-        // Check if this expiration is in optimal DTE range
-        const isOptimalDTE = daysToExpiry >= 30 && daysToExpiry <= 45;
+        // Check if this expiration is in optimal DTE range (expanded to include 40s)
+        const isOptimalDTE = daysToExpiry >= 30 && daysToExpiry <= 49;
         
         // Check if earnings occurs before this expiration
         let earningsWarning = null;
@@ -870,13 +900,122 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       otmRange: { low: otmLow, high: otmHigh },
       earningsDate: earningsDate ? earningsDate.toISOString() : null,
       ivRankData: ivRankData,
-      dteRange: { target: 37.5, min: 30, max: 45 },
+      dteRange: { target: 37.5, min: 30, max: 49 },
       weeksData
     });
     
   } catch (err) {
     console.error(`RF analysis error for ${symbol}:`, err);
     res.status(500).json({ error: 'RF analysis failed', details: err?.message });
+  }
+});
+
+// Get all options data for a symbol (all strikes, all DTEs)
+app.get('/api/all-options/:symbol', async (req, res) => {
+  const symbol = toUpperNoSpaces(req.params.symbol);
+  if (!symbol) {
+    return res.status(400).json({ error: 'Missing symbol' });
+  }
+
+  try {
+    console.log(`Fetching all options data for ${symbol}...`);
+
+    // Get current stock price
+    const quote = await yf.quoteSummary(symbol, { modules: ['price'] });
+    const currentPrice = quote?.price?.regularMarketPrice;
+    if (!currentPrice || !Number.isFinite(currentPrice)) {
+      return res.status(400).json({ error: 'Unable to get current stock price' });
+    }
+
+    // Get all available expiration dates
+    const base = await yf.options(symbol);
+    const expirations = base?.expirationDates || [];
+    if (!expirations.length) {
+      return res.status(404).json({ error: 'No options available' });
+    }
+
+    // Sort expirations chronologically
+    const sortedExpirations = expirations.sort((a, b) => a.getTime() - b.getTime());
+    
+    // Get current date
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Filter to future expirations only
+    const futureExpirations = sortedExpirations.filter(exp => exp.getTime() >= today.getTime());
+
+    const results = [];
+
+    // Fetch options chain for each expiration
+    for (const expDate of futureExpirations) {
+      try {
+        console.log(`Fetching options for expiration: ${expDate.toISOString()}`);
+        
+        const chain = await yf.options(symbol, { date: expDate });
+        const opt = chain?.options?.[0];
+        
+        if (!opt) {
+          console.warn(`No options data for expiration: ${expDate.toISOString()}`);
+          continue;
+        }
+
+        // Process calls
+        const calls = (opt.calls || []).map(call => ({
+          contractSymbol: call.contractSymbol,
+          strike: call.strike,
+          lastPrice: call.lastPrice,
+          bid: call.bid,
+          ask: call.ask,
+          change: call.change,
+          percentChange: call.percentChange,
+          volume: call.volume,
+          openInterest: call.openInterest,
+          impliedVolatility: call.impliedVolatility,
+          inTheMoney: call.inTheMoney
+        }));
+
+        // Process puts
+        const puts = (opt.puts || []).map(put => ({
+          contractSymbol: put.contractSymbol,
+          strike: put.strike,
+          lastPrice: put.lastPrice,
+          bid: put.bid,
+          ask: put.ask,
+          change: put.change,
+          percentChange: put.percentChange,
+          volume: put.volume,
+          openInterest: put.openInterest,
+          impliedVolatility: put.impliedVolatility,
+          inTheMoney: put.inTheMoney
+        }));
+
+        // Sort by strike price
+        calls.sort((a, b) => a.strike - b.strike);
+        puts.sort((a, b) => a.strike - b.strike);
+
+        results.push({
+          expiration: Math.floor((opt.expirationDate?.getTime?.() || expDate.getTime()) / 1000),
+          calls: calls,
+          puts: puts
+        });
+
+      } catch (e) {
+        console.warn(`Failed to fetch options for expiration ${expDate}: ${e.message}`);
+        continue;
+      }
+    }
+
+    console.log(`Successfully fetched options data for ${symbol}: ${results.length} expirations`);
+
+    res.json({
+      symbol,
+      currentPrice,
+      expirations: results
+    });
+
+  } catch (err) {
+    console.error(`Failed to fetch all options for ${symbol}:`, err);
+    res.status(500).json({ error: 'Failed to fetch options data', details: err?.message });
   }
 });
 
