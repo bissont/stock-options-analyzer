@@ -723,10 +723,21 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       }))
       .sort((a, b) => a.dte - b.dte); // Sort by DTE ascending
     
+    // Debug: Log all available expirations
+    console.log(`Available expirations for ${symbol}:`);
+    allFutureExpirations.forEach(exp => {
+      console.log(`  ${exp.date.toDateString()} (${exp.dte} DTE)`);
+    });
+    
     // Find candidates for each DTE range
     const range20s = allFutureExpirations.filter(exp => exp.dte >= 20 && exp.dte <= 29);
     const range30s = allFutureExpirations.filter(exp => exp.dte >= 30 && exp.dte <= 39);
     const range40s = allFutureExpirations.filter(exp => exp.dte >= 40 && exp.dte <= 49);
+    
+    console.log(`DTE ranges found:`);
+    console.log(`  20s: ${range20s.length} options`);
+    console.log(`  30s: ${range30s.length} options`);
+    console.log(`  40s: ${range40s.length} options`);
     
     const selectedExpirations = [];
     
@@ -745,6 +756,17 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
     }
     
     // If we don't have all three ranges, try to fill with best available options
+    // Prioritize getting longer DTEs if 40s range is missing
+    if (range40s.length === 0 && allFutureExpirations.length > 3) {
+      // Look for options in 50+ DTE range
+      const range50plus = allFutureExpirations.filter(exp => exp.dte >= 50 && exp.dte <= 90);
+      if (range50plus.length > 0) {
+        selectedExpirations.push(range50plus[0]);
+        console.log(`Added 50+ DTE option: ${range50plus[0].dte} DTE`);
+      }
+    }
+    
+    // Fill remaining slots with nearest available options >= 20 DTE
     while (selectedExpirations.length < 3 && allFutureExpirations.length > selectedExpirations.length) {
       const used = new Set(selectedExpirations.map(exp => exp.date.getTime()));
       const remaining = allFutureExpirations.filter(exp => !used.has(exp.date.getTime()));
@@ -755,6 +777,7 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
       
       if (toAdd) {
         selectedExpirations.push(toAdd);
+        console.log(`Added fallback option: ${toAdd.dte} DTE`);
       } else {
         break;
       }
