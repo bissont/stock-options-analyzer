@@ -769,9 +769,10 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
         for (const call of otmCalls) {
           const bid = call.bid || 0;
           const ask = call.ask || 0;
-          if (bid <= 0 && ask <= 0) continue; // Skip if no pricing data
+          const lastPrice = call.lastPrice || 0;
           
-          const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (call.lastPrice || 0);
+          // Use best available price data
+          const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (lastPrice > 0 ? lastPrice : 0.01);
           
           const iv = call.impliedVolatility || 0.25;
           const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
