@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const yf = require('yahoo-finance2').default;
+const brain = require('brain.js');
 
 const app = express();
 
@@ -530,6 +531,165 @@ function generateTrainingData(symbol, historicalData) {
   return { features, targets };
 }
 
+// Neural Network Assignment Probability System
+const neuralNetworks = {}; // Cache for trained networks
+
+class LightweightAssignmentPredictor {
+  constructor() {
+    this.network = new brain.NeuralNetwork({
+      inputSize: 10,
+      hiddenLayers: [16, 8],
+      outputSize: 1,
+      activation: 'sigmoid',
+      learningRate: 0.1,
+      errorThresh: 0.001,
+      iterations: 1000
+    });
+    this.isTrained = false;
+    this.features = [
+      'moneyness',      // S/K
+      'timeToExpiry',   // T (years)
+      'volatility',     // IV
+      'delta',          // Option delta
+      'otmPercent',     // (K-S)/S
+      'volumeRatio',    // volume/1M
+      'ivRank',         // Volatility percentile
+      'liquidityScore', // bid-ask spread metric
+      'marketSentiment', // VIX proxy
+      'timeDecay'       // Days/365 squared
+    ];
+  }
+
+  // Enhanced feature extraction with more sophisticated metrics
+  extractFeatures(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest) {
+    const moneyness = currentPrice / strike;
+    const delta = calculateDelta(currentPrice, strike, timeToExpiry, 0.045, iv);
+    const otmPercent = (strike - currentPrice) / currentPrice;
+    
+    // Enhanced features
+    const volumeRatio = (volume || 0) / 1_000_000;
+    const ivRank = this.calculateIVPercentile(iv); // 0-1 scale
+    const bidAskSpread = (bid && ask && bid > 0 && ask > 0) ? (ask - bid) / ((ask + bid) / 2) : 0.1;
+    const liquidityScore = 1 / (1 + bidAskSpread); // Higher = better liquidity
+    const marketSentiment = 0.5; // Default neutral, could be enhanced with VIX data
+    const timeDecay = Math.pow(daysToExpiry / 365, 2); // Accelerating time decay
+    
+    return {
+      moneyness: this.normalize(moneyness, 0.8, 1.3),
+      timeToExpiry: this.normalize(timeToExpiry, 0, 1),
+      volatility: this.normalize(iv, 0.1, 1.0),
+      delta: this.normalize(Math.abs(delta), 0, 1),
+      otmPercent: this.normalize(otmPercent, 0, 0.3),
+      volumeRatio: this.normalize(volumeRatio, 0, 10),
+      ivRank: ivRank,
+      liquidityScore: liquidityScore,
+      marketSentiment: marketSentiment,
+      timeDecay: this.normalize(timeDecay, 0, 1)
+    };
+  }
+
+  // Simple normalization to 0-1 range
+  normalize(value, min, max) {
+    return Math.max(0, Math.min(1, (value - min) / (max - min)));
+  }
+
+  // Calculate IV percentile (simplified)
+  calculateIVPercentile(iv) {
+    // Simple heuristic: typical IV ranges from 0.1 to 1.0
+    return this.normalize(iv, 0.1, 1.0);
+  }
+
+  // Generate training data for the neural network
+  generateNeuralTrainingData(symbol, historicalData, count = 500) {
+    const trainingData = [];
+    
+    for (let i = 0; i < count; i++) {
+      // Generate realistic training examples
+      const basePrice = 100 + (Math.random() - 0.5) * 40; // $80-$120 range
+      const strike = basePrice * (1 + Math.random() * 0.3); // 0-30% OTM
+      const dte = 1 + Math.random() * 90; // 1-90 days
+      const timeToExpiry = dte / 365;
+      const iv = 0.15 + Math.random() * 0.85; // 15-100% IV
+      const volume = Math.random() * 10000;
+      const bid = 0.5 + Math.random() * 10;
+      const ask = bid + Math.random() * 2;
+      const openInterest = Math.random() * 50000;
+
+      const features = this.extractFeatures(basePrice, strike, timeToExpiry, dte, iv, volume, bid, ask, openInterest);
+      
+      // Calculate "true" assignment probability using enhanced Black-Scholes
+      const delta = calculateDelta(basePrice, strike, timeToExpiry, 0.045, iv);
+      const bsProb = calculateAssignmentProbability(basePrice, strike, timeToExpiry, 0.045, iv, delta);
+      
+      // Add some realistic noise and adjustments
+      let targetProb = bsProb.enhanced;
+      
+      // Market adjustments
+      if (dte < 7) targetProb *= 1.1; // Higher assignment risk near expiry
+      if (iv > 0.5) targetProb *= 0.95; // High IV slightly reduces assignment probability
+      if (features.liquidityScore < 0.3) targetProb *= 1.05; // Wide spreads increase assignment risk
+      
+      targetProb = Math.max(0, Math.min(1, targetProb));
+
+      trainingData.push({
+        input: features,
+        output: { assignmentProbability: targetProb }
+      });
+    }
+
+    return trainingData;
+  }
+
+  // Train the neural network
+  async train(symbol, historicalData) {
+    console.log(`Training neural network for ${symbol}...`);
+    
+    const trainingData = this.generateNeuralTrainingData(symbol, historicalData);
+    
+    try {
+      const stats = this.network.train(trainingData, {
+        iterations: 1000,
+        errorThresh: 0.001,
+        learningRate: 0.1,
+        momentum: 0.1,
+        callback: null, // Remove logging for performance
+        callbackPeriod: 100
+      });
+      
+      this.isTrained = true;
+      console.log(`Neural network trained for ${symbol}. Error: ${stats.error}`);
+      return stats;
+      
+    } catch (error) {
+      console.warn(`Neural network training failed for ${symbol}:`, error.message);
+      throw error;
+    }
+  }
+
+  // Predict assignment probability
+  predict(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest) {
+    if (!this.isTrained) {
+      throw new Error('Neural network not trained');
+    }
+
+    const features = this.extractFeatures(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest);
+    const prediction = this.network.run(features);
+    
+    return prediction.assignmentProbability || prediction; // Handle different output formats
+  }
+
+  // Get network JSON for caching
+  toJSON() {
+    return this.network.toJSON();
+  }
+
+  // Load network from JSON
+  fromJSON(json) {
+    this.network.fromJSON(json);
+    this.isTrained = true;
+  }
+}
+
 // Calculate IV Rank for a symbol (simplified version)
 async function calculateIVRank(symbol) {
   try {
@@ -962,12 +1122,12 @@ app.get('/api/all-options/:symbol', async (req, res) => {
         const daysToExpiry = (expDate.getTime() - Date.now()) / (1000 * 3600 * 24);
         const timeToExpiry = daysToExpiry / 365.0;
         
-        // Get or create RF model for this symbol
-        let model = null;
-        if (trainedModels[symbol]) {
-          model = trainedModels[symbol].model;
+        // Get or create Neural Network model for this symbol
+        let neuralNet = null;
+        if (neuralNetworks[symbol]) {
+          neuralNet = neuralNetworks[symbol];
         } else {
-          // Create a simple model if none exists (use historical data if available)
+          // Create and train neural network if none exists
           try {
             const endDate = new Date();
             const startDate = new Date();
@@ -980,22 +1140,14 @@ app.get('/api/all-options/:symbol', async (req, res) => {
             });
             
             if (historicalData && historicalData.length >= 100) {
-              const { features, targets } = generateTrainingData(symbol, historicalData);
-              const rfModel = new SimpleRandomForest(120, 10, 5);
-              rfModel.train(features, targets);
+              neuralNet = new LightweightAssignmentPredictor();
+              const stats = await neuralNet.train(symbol, historicalData);
               
-              const predictions = rfModel.predict(features);
-              const mae = predictions.reduce((sum, pred, i) => sum + Math.abs(pred - targets[i]), 0) / predictions.length;
-              const variance = targets.reduce((sum, t) => sum + (t - targets.reduce((a, b) => a + b) / targets.length) ** 2, 0) / targets.length;
-              const mse = predictions.reduce((sum, pred, i) => sum + (pred - targets[i]) ** 2, 0) / predictions.length;
-              const r2 = 1 - (mse / variance);
-              
-              trainedModels[symbol] = { model: rfModel, stats: { mae, r2 } };
-              model = rfModel;
-              console.log(`Trained RF model for ${symbol} in all-options endpoint`);
+              neuralNetworks[symbol] = neuralNet;
+              console.log(`Trained neural network for ${symbol} in all-options endpoint. Error: ${stats.error}`);
             }
           } catch (e) {
-            console.warn(`Could not train RF model for ${symbol}: ${e.message}`);
+            console.warn(`Could not train neural network for ${symbol}: ${e.message}`);
           }
         }
 
@@ -1020,39 +1172,56 @@ app.get('/api/all-options/:symbol', async (req, res) => {
             const annualYield = returnPercent > 0 ? 
               (parseFloat(returnPercent) * (12 / months)).toFixed(1) : '0.0';
             
-            // Calculate RF assignment probability
+            // Calculate Neural Network assignment probability
             let assignmentProbability = '0.0';
-            if (model && premium > 0) {
+            if (neuralNet && premium > 0) {
               try {
                 const iv = call.impliedVolatility || 0.25;
+                
+                // Use neural network prediction
+                const neuralProb = neuralNet.predict(
+                  currentPrice, 
+                  call.strike, 
+                  timeToExpiry, 
+                  daysToExpiry, 
+                  iv, 
+                  call.volume || 0, 
+                  bid, 
+                  ask, 
+                  call.openInterest || 0
+                );
+                
+                // Calculate Black-Scholes as fallback/blend
                 const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
                 const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
                 
-                // RF prediction features
-                const features = [
-                  currentPrice / call.strike, // moneyness
-                  daysToExpiry,
-                  iv,
-                  delta,
-                  (call.strike - currentPrice) / currentPrice, // otm percent
-                  (call.volume || 0) / 1_000_000, // volume in millions
-                  bsProbs.enhanced
-                ];
-                
-                let rfProb = bsProbs.enhanced;
-                try {
-                  rfProb = Math.max(0, Math.min(1, model.predict([features])[0]));
-                } catch (e) {
-                  console.warn(`RF prediction failed for ${call.strike}: ${e.message}`);
-                }
-                
-                // Blended probability: RF + BS with market adjustments
-                let blendedProb = (rfProb * 0.7) + (bsProbs.enhanced * 0.3);
+                // Ensemble: 80% Neural Network + 20% Enhanced Black-Scholes
+                let blendedProb = (neuralProb * 0.8) + (bsProbs.enhanced * 0.2);
                 blendedProb = Math.max(0, Math.min(1, blendedProb));
                 
                 assignmentProbability = (blendedProb * 100).toFixed(1);
               } catch (e) {
-                console.warn(`Error calculating assignment probability for ${call.strike}: ${e.message}`);
+                console.warn(`Error calculating neural assignment probability for ${call.strike}: ${e.message}`);
+                
+                // Fallback to enhanced Black-Scholes if neural network fails
+                try {
+                  const iv = call.impliedVolatility || 0.25;
+                  const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
+                  const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
+                  assignmentProbability = (bsProbs.enhanced * 100).toFixed(1);
+                } catch (fallbackError) {
+                  console.warn(`Fallback BS calculation also failed for ${call.strike}:`, fallbackError.message);
+                }
+              }
+            } else if (premium > 0) {
+              // Fallback to Black-Scholes if no neural network
+              try {
+                const iv = call.impliedVolatility || 0.25;
+                const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
+                const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
+                assignmentProbability = (bsProbs.enhanced * 100).toFixed(1);
+              } catch (e) {
+                console.warn(`Fallback BS calculation failed for ${call.strike}:`, e.message);
               }
             }
 
