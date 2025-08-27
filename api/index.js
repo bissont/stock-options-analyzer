@@ -535,8 +535,8 @@ const neuralNetworks = {}; // Cache for trained networks
 
 class LightweightAssignmentPredictor {
   constructor() {
-    // Simple feedforward network: 10 -> 16 -> 8 -> 1
-    this.weights1 = this.initializeWeights(10, 16);  // Input to hidden1
+    // Enhanced network: 13 -> 16 -> 8 -> 1 (3 new historical features)
+    this.weights1 = this.initializeWeights(13, 16);  // Input to hidden1
     this.weights2 = this.initializeWeights(16, 8);   // Hidden1 to hidden2  
     this.weights3 = this.initializeWeights(8, 1);    // Hidden2 to output
     this.bias1 = new Array(16).fill(0);
@@ -574,7 +574,7 @@ class LightweightAssignmentPredictor {
     const hidden1 = new Array(16);
     for (let j = 0; j < 16; j++) {
       let sum = this.bias1[j];
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 13; i++) { // Updated to 13 features
         sum += inputs[i] * this.weights1[i][j];
       }
       hidden1[j] = this.sigmoid(sum);
@@ -603,19 +603,49 @@ class LightweightAssignmentPredictor {
     return { hidden1, hidden2, output: output[0] };
   }
 
-  // Enhanced feature extraction with more sophisticated metrics
-  extractFeatures(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest) {
+  // Enhanced feature extraction with historical patterns (anti-overfitting)
+  extractFeatures(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest, historicalData = null) {
     const moneyness = currentPrice / strike;
     const delta = calculateDelta(currentPrice, strike, timeToExpiry, 0.045, iv);
     const otmPercent = (strike - currentPrice) / currentPrice;
     
-    // Enhanced features
+    // Core features (unchanged)
     const volumeRatio = (volume || 0) / 1_000_000;
-    const ivRank = this.calculateIVPercentile(iv); // 0-1 scale
+    const ivRank = this.calculateIVPercentile(iv);
     const bidAskSpread = (bid && ask && bid > 0 && ask > 0) ? (ask - bid) / ((ask + bid) / 2) : 0.1;
-    const liquidityScore = 1 / (1 + bidAskSpread); // Higher = better liquidity
-    const marketSentiment = 0.5; // Default neutral, could be enhanced with VIX data
-    const timeDecay = Math.pow(daysToExpiry / 365, 2); // Accelerating time decay
+    const liquidityScore = 1 / (1 + bidAskSpread);
+    const marketSentiment = 0.5; // Default neutral
+    const timeDecay = Math.pow(daysToExpiry / 365, 2);
+    
+    // Historical features (robust, anti-overfitting)
+    let historicalVolatilityTrend = 0.5; // Default neutral
+    let priceVelocity = 0.5; // Default neutral  
+    let earningsProximity = 0; // Default no earnings risk
+    
+    if (historicalData && historicalData.length >= 90) {
+      // 1. Multi-timeframe volatility context (prevents overfitting to recent moves)
+      const recent30Vol = this.calculateHistoricalVol(historicalData.slice(-30));
+      const recent60Vol = this.calculateHistoricalVol(historicalData.slice(-60));
+      const recent90Vol = this.calculateHistoricalVol(historicalData.slice(-90));
+      
+      // Volatility trend: is volatility increasing or decreasing over time?
+      const volTrend = (recent30Vol - recent90Vol) / recent90Vol;
+      historicalVolatilityTrend = this.normalize(volTrend, -0.5, 0.5); // Normalized trend
+      
+      // 2. Price momentum (helps predict continuation vs mean reversion)
+      const recent10Prices = historicalData.slice(-10).map(d => d.close);
+      const recent20Prices = historicalData.slice(-20).map(d => d.close);
+      
+      if (recent10Prices.length >= 10 && recent20Prices.length >= 20) {
+        const avg10 = recent10Prices.reduce((a, b) => a + b) / recent10Prices.length;
+        const avg20 = recent20Prices.reduce((a, b) => a + b) / recent20Prices.length;
+        const momentum = (avg10 - avg20) / avg20;
+        priceVelocity = this.normalize(momentum, -0.1, 0.1); // 10% momentum range
+      }
+      
+      // 3. Earnings proximity (quarterly pattern detection)
+      earningsProximity = this.estimateEarningsRisk(historicalData, daysToExpiry);
+    }
     
     return {
       moneyness: this.normalize(moneyness, 0.8, 1.3),
@@ -627,7 +657,10 @@ class LightweightAssignmentPredictor {
       ivRank: ivRank,
       liquidityScore: liquidityScore,
       marketSentiment: marketSentiment,
-      timeDecay: this.normalize(timeDecay, 0, 1)
+      timeDecay: this.normalize(timeDecay, 0, 1),
+      historicalVolTrend: historicalVolatilityTrend, // NEW: Vol increasing/decreasing
+      priceVelocity: priceVelocity, // NEW: Recent price momentum  
+      earningsRisk: earningsProximity // NEW: Earnings proximity risk
     };
   }
 
@@ -640,6 +673,77 @@ class LightweightAssignmentPredictor {
   calculateIVPercentile(iv) {
     // Simple heuristic: typical IV ranges from 0.1 to 1.0
     return this.normalize(iv, 0.1, 1.0);
+  }
+
+  // Calculate historical volatility from price data (annualized)
+  calculateHistoricalVol(priceData) {
+    if (!priceData || priceData.length < 2) return 0.25; // Default 25%
+    
+    const returns = [];
+    for (let i = 1; i < priceData.length; i++) {
+      const return_ = Math.log(priceData[i].close / priceData[i-1].close);
+      returns.push(return_);
+    }
+    
+    if (returns.length === 0) return 0.25;
+    
+    const mean = returns.reduce((a, b) => a + b) / returns.length;
+    const variance = returns.reduce((sum, ret) => sum + Math.pow(ret - mean, 2), 0) / returns.length;
+    const dailyVol = Math.sqrt(variance);
+    
+    return dailyVol * Math.sqrt(252); // Annualize (252 trading days)
+  }
+
+  // Estimate earnings risk based on quarterly patterns (anti-overfitting approach)
+  estimateEarningsRisk(historicalData, daysToExpiry) {
+    if (!historicalData || historicalData.length < 180 || daysToExpiry > 90) {
+      return 0; // No earnings risk for long-term options
+    }
+    
+    // Look for quarterly volatility spikes (earnings pattern detection)
+    const recentData = historicalData.slice(-180); // 6 months
+    const volatilitySpikes = [];
+    
+    // Calculate daily volatility
+    for (let i = 1; i < recentData.length; i++) {
+      const return_ = Math.abs(Math.log(recentData[i].close / recentData[i-1].close));
+      volatilitySpikes.push(return_);
+    }
+    
+    // Find the top 5% most volatile days (potential earnings days)
+    volatilitySpikes.sort((a, b) => b - a);
+    const top5Percent = Math.max(1, Math.floor(volatilitySpikes.length * 0.05));
+    const earningsThreshold = volatilitySpikes[top5Percent - 1];
+    
+    // Look for recent high-volatility days that might indicate earnings pattern
+    const recentHighVolDays = [];
+    for (let i = recentData.length - 90; i < recentData.length - 1; i++) {
+      if (i >= 1) {
+        const dailyReturn = Math.abs(Math.log(recentData[i].close / recentData[i-1].close));
+        if (dailyReturn >= earningsThreshold) {
+          const daysAgo = recentData.length - 1 - i;
+          recentHighVolDays.push(daysAgo);
+        }
+      }
+    }
+    
+    // Estimate if we're approaching an earnings date based on quarterly pattern
+    let earningsRisk = 0;
+    if (recentHighVolDays.length > 0) {
+      // Look for ~90 day patterns (quarterly earnings)
+      const avgEarningsCycle = 90;
+      for (const earningsDay of recentHighVolDays) {
+        const daysSinceEarnings = earningsDay;
+        const daysToNextEarnings = avgEarningsCycle - (daysSinceEarnings % avgEarningsCycle);
+        
+        if (daysToNextEarnings <= daysToExpiry + 7) { // Within a week of potential earnings
+          const proximityRisk = Math.max(0, 1 - (daysToNextEarnings / 30)); // Higher risk as we get closer
+          earningsRisk = Math.max(earningsRisk, proximityRisk);
+        }
+      }
+    }
+    
+    return Math.min(1, earningsRisk); // Cap at 1.0
   }
 
   // Generate training data for the neural network
@@ -658,7 +762,7 @@ class LightweightAssignmentPredictor {
       const ask = bid + Math.random() * 2;
       const openInterest = Math.random() * 50000;
 
-      const features = this.extractFeatures(basePrice, strike, timeToExpiry, dte, iv, volume, bid, ask, openInterest);
+      const features = this.extractFeatures(basePrice, strike, timeToExpiry, dte, iv, volume, bid, ask, openInterest, historicalData);
       
       // Calculate "true" assignment probability using enhanced Black-Scholes
       const delta = calculateDelta(basePrice, strike, timeToExpiry, 0.045, iv);
@@ -740,12 +844,12 @@ class LightweightAssignmentPredictor {
   }
 
   // Predict assignment probability
-  predict(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest) {
+  predict(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest, historicalData = null) {
     if (!this.isTrained) {
       throw new Error('Neural network not trained');
     }
 
-    const features = this.extractFeatures(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest);
+    const features = this.extractFeatures(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest, historicalData);
     const inputs = Object.values(features);
     const result = this.forward(inputs);
     
@@ -1187,31 +1291,34 @@ app.get('/api/all-options/:symbol', async (req, res) => {
         
         // Get or create Neural Network model for this symbol
         let neuralNet = null;
+        let historicalData = null;
+        
         if (neuralNetworks[symbol]) {
           neuralNet = neuralNetworks[symbol];
-        } else {
-          // Create and train neural network if none exists
-          try {
-            const endDate = new Date();
-            const startDate = new Date();
-            startDate.setFullYear(endDate.getFullYear() - 1);
+        }
+        
+        // Always fetch historical data for enhanced features (even if NN exists)
+        try {
+          const endDate = new Date();
+          const startDate = new Date();
+          startDate.setFullYear(endDate.getFullYear() - 1);
+          
+          historicalData = await yf.historical(symbol, {
+            period1: startDate,
+            period2: endDate,
+            interval: '1d'
+          });
+          
+          // Train neural network if none exists
+          if (!neuralNet && historicalData && historicalData.length >= 100) {
+            neuralNet = new LightweightAssignmentPredictor();
+            const stats = await neuralNet.train(symbol, historicalData);
             
-            const historicalData = await yf.historical(symbol, {
-              period1: startDate,
-              period2: endDate,
-              interval: '1d'
-            });
-            
-            if (historicalData && historicalData.length >= 100) {
-              neuralNet = new LightweightAssignmentPredictor();
-              const stats = await neuralNet.train(symbol, historicalData);
-              
-              neuralNetworks[symbol] = neuralNet;
-              console.log(`Trained neural network for ${symbol} in all-options endpoint. Error: ${stats.error}`);
-            }
-          } catch (e) {
-            console.warn(`Could not train neural network for ${symbol}: ${e.message}`);
+            neuralNetworks[symbol] = neuralNet;
+            console.log(`Trained neural network for ${symbol} with enhanced features. Error: ${stats.error}`);
           }
+        } catch (e) {
+          console.warn(`Could not fetch historical data or train neural network for ${symbol}: ${e.message}`);
         }
 
         // Process calls with additional calculations - filter to OTM only
@@ -1241,7 +1348,7 @@ app.get('/api/all-options/:symbol', async (req, res) => {
               try {
                 const iv = call.impliedVolatility || 0.25;
                 
-                // Use neural network prediction
+                // Use neural network prediction with historical context
                 const neuralProb = neuralNet.predict(
                   currentPrice, 
                   call.strike, 
@@ -1251,7 +1358,8 @@ app.get('/api/all-options/:symbol', async (req, res) => {
                   call.volume || 0, 
                   bid, 
                   ask, 
-                  call.openInterest || 0
+                  call.openInterest || 0,
+                  historicalData
                 );
                 
                 // Calculate Black-Scholes as fallback/blend
