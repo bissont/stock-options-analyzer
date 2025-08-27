@@ -154,7 +154,7 @@ function calculateGoalBasedScore(premium, assignmentProbability, strike, current
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, version: 'neural-network' });
 });
 
 // Get real-time quote for a symbol (Stooq for resilience)
