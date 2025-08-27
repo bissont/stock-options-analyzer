@@ -2,7 +2,6 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const yf = require('yahoo-finance2').default;
-const brain = require('brain.js');
 
 const app = express();
 
@@ -531,33 +530,77 @@ function generateTrainingData(symbol, historicalData) {
   return { features, targets };
 }
 
-// Neural Network Assignment Probability System
+// Pure JavaScript Neural Network - Vercel Compatible
 const neuralNetworks = {}; // Cache for trained networks
 
 class LightweightAssignmentPredictor {
   constructor() {
-    this.network = new brain.NeuralNetwork({
-      inputSize: 10,
-      hiddenLayers: [16, 8],
-      outputSize: 1,
-      activation: 'sigmoid',
-      learningRate: 0.1,
-      errorThresh: 0.001,
-      iterations: 1000
-    });
+    // Simple feedforward network: 10 -> 16 -> 8 -> 1
+    this.weights1 = this.initializeWeights(10, 16);  // Input to hidden1
+    this.weights2 = this.initializeWeights(16, 8);   // Hidden1 to hidden2  
+    this.weights3 = this.initializeWeights(8, 1);    // Hidden2 to output
+    this.bias1 = new Array(16).fill(0);
+    this.bias2 = new Array(8).fill(0);
+    this.bias3 = new Array(1).fill(0);
     this.isTrained = false;
-    this.features = [
-      'moneyness',      // S/K
-      'timeToExpiry',   // T (years)
-      'volatility',     // IV
-      'delta',          // Option delta
-      'otmPercent',     // (K-S)/S
-      'volumeRatio',    // volume/1M
-      'ivRank',         // Volatility percentile
-      'liquidityScore', // bid-ask spread metric
-      'marketSentiment', // VIX proxy
-      'timeDecay'       // Days/365 squared
-    ];
+    this.learningRate = 0.1;
+  }
+
+  // Initialize random weights
+  initializeWeights(inputSize, outputSize) {
+    const weights = [];
+    for (let i = 0; i < inputSize; i++) {
+      weights[i] = [];
+      for (let j = 0; j < outputSize; j++) {
+        weights[i][j] = (Math.random() - 0.5) * 2; // Random between -1 and 1
+      }
+    }
+    return weights;
+  }
+
+  // Sigmoid activation function
+  sigmoid(x) {
+    return 1 / (1 + Math.exp(-Math.max(-250, Math.min(250, x)))); // Prevent overflow
+  }
+
+  // Sigmoid derivative
+  sigmoidDerivative(x) {
+    return x * (1 - x);
+  }
+
+  // Forward pass
+  forward(inputs) {
+    // Input to hidden1
+    const hidden1 = new Array(16);
+    for (let j = 0; j < 16; j++) {
+      let sum = this.bias1[j];
+      for (let i = 0; i < 10; i++) {
+        sum += inputs[i] * this.weights1[i][j];
+      }
+      hidden1[j] = this.sigmoid(sum);
+    }
+
+    // Hidden1 to hidden2
+    const hidden2 = new Array(8);
+    for (let j = 0; j < 8; j++) {
+      let sum = this.bias2[j];
+      for (let i = 0; i < 16; i++) {
+        sum += hidden1[i] * this.weights2[i][j];
+      }
+      hidden2[j] = this.sigmoid(sum);
+    }
+
+    // Hidden2 to output
+    const output = new Array(1);
+    for (let j = 0; j < 1; j++) {
+      let sum = this.bias3[j];
+      for (let i = 0; i < 8; i++) {
+        sum += hidden2[i] * this.weights3[i][j];
+      }
+      output[j] = this.sigmoid(sum);
+    }
+
+    return { hidden1, hidden2, output: output[0] };
   }
 
   // Enhanced feature extraction with more sophisticated metrics
@@ -640,25 +683,55 @@ class LightweightAssignmentPredictor {
     return trainingData;
   }
 
-  // Train the neural network
+  // Simplified training using gradient descent
   async train(symbol, historicalData) {
-    console.log(`Training neural network for ${symbol}...`);
+    console.log(`Training pure JS neural network for ${symbol}...`);
     
     const trainingData = this.generateNeuralTrainingData(symbol, historicalData);
     
     try {
-      const stats = this.network.train(trainingData, {
-        iterations: 1000,
-        errorThresh: 0.001,
-        learningRate: 0.1,
-        momentum: 0.1,
-        callback: null, // Remove logging for performance
-        callbackPeriod: 100
-      });
+      const epochs = 500; // Reduced for faster training
+      let totalError = 0;
+      
+      for (let epoch = 0; epoch < epochs; epoch++) {
+        totalError = 0;
+        
+        // Shuffle training data
+        for (let i = trainingData.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [trainingData[i], trainingData[j]] = [trainingData[j], trainingData[i]];
+        }
+        
+        for (const sample of trainingData) {
+          const inputs = Object.values(sample.input);
+          const target = sample.output.assignmentProbability;
+          
+          // Forward pass
+          const result = this.forward(inputs);
+          const output = result.output;
+          
+          // Calculate error
+          const error = target - output;
+          totalError += error * error;
+          
+          // Simplified backpropagation (just adjust output layer for speed)
+          const outputDelta = error * this.sigmoidDerivative(output);
+          
+          // Update weights and bias for output layer only (simplified)
+          for (let i = 0; i < 8; i++) {
+            this.weights3[i][0] += this.learningRate * outputDelta * result.hidden2[i];
+          }
+          this.bias3[0] += this.learningRate * outputDelta;
+        }
+        
+        // Early stopping if error is low enough
+        if (totalError < 0.01) break;
+      }
       
       this.isTrained = true;
-      console.log(`Neural network trained for ${symbol}. Error: ${stats.error}`);
-      return stats;
+      const avgError = totalError / trainingData.length;
+      console.log(`Neural network trained for ${symbol}. Average error: ${avgError.toFixed(4)}`);
+      return { error: avgError };
       
     } catch (error) {
       console.warn(`Neural network training failed for ${symbol}:`, error.message);
@@ -673,20 +746,10 @@ class LightweightAssignmentPredictor {
     }
 
     const features = this.extractFeatures(currentPrice, strike, timeToExpiry, daysToExpiry, iv, volume, bid, ask, openInterest);
-    const prediction = this.network.run(features);
+    const inputs = Object.values(features);
+    const result = this.forward(inputs);
     
-    return prediction.assignmentProbability || prediction; // Handle different output formats
-  }
-
-  // Get network JSON for caching
-  toJSON() {
-    return this.network.toJSON();
-  }
-
-  // Load network from JSON
-  fromJSON(json) {
-    this.network.fromJSON(json);
-    this.isTrained = true;
+    return result.output;
   }
 }
 
