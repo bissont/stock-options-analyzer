@@ -1258,8 +1258,8 @@ app.get('/api/all-options/:symbol', async (req, res) => {
                 const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
                 const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
                 
-                // Ensemble: 80% Neural Network + 20% Enhanced Black-Scholes
-                let blendedProb = (neuralProb * 0.8) + (bsProbs.enhanced * 0.2);
+                // Ensemble: 50% Neural Network + 50% Enhanced Black-Scholes
+                let blendedProb = (neuralProb * 0.5) + (bsProbs.enhanced * 0.5);
                 blendedProb = Math.max(0, Math.min(1, blendedProb));
                 
                 assignmentProbability = (blendedProb * 100).toFixed(1);
