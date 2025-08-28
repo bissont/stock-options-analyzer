@@ -39,6 +39,7 @@ async function fetchAllOptions() {
 <template>
   <div class="container">
     <h1>Options Pricing Data</h1>
+    <!-- Force Vercel deployment -->
     
     <form @submit.prevent="fetchAllOptions" class="form">
       <input 
