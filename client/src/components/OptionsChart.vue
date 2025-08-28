@@ -183,9 +183,7 @@ const chartOptions = computed(() => ({
       },
       grid: {
         drawOnChartArea: true,
-      },
-      min: 0,
-      max: 100
+      }
     },
   },
 }))
