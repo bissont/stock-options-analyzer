@@ -46,20 +46,24 @@ const expirationTitle = computed(() => {
   return `${expDate.toLocaleDateString()} (${dte} DTE)`
 })
 
-const chartData = computed(() => {
+const sortedCalls = computed(() => {
   if (!props.expirationData.calls || props.expirationData.calls.length === 0) {
+    return []
+  }
+  return [...props.expirationData.calls].sort((a, b) => a.strike - b.strike)
+})
+
+const chartData = computed(() => {
+  if (sortedCalls.value.length === 0) {
     return { labels: [], datasets: [] }
   }
 
-  // Sort calls by strike price
-  const sortedCalls = [...props.expirationData.calls].sort((a, b) => a.strike - b.strike)
-  
   // Prepare data points
   const strikes = []
   const otmPercentages = []
   const assignmentProbabilities = []
 
-  sortedCalls.forEach(call => {
+  sortedCalls.value.forEach(call => {
     strikes.push(`$${call.strike}`)
     
     // Calculate OTM percentage
@@ -111,10 +115,45 @@ const chartOptions = computed(() => ({
     },
     tooltip: {
       callbacks: {
+        title: function(context) {
+          // Show strike price in title
+          const strikeLabel = context[0].label
+          return `Strike: ${strikeLabel}`
+        },
         label: function(context) {
           const label = context.dataset.label || ''
           const value = context.parsed.y.toFixed(2)
-          return `${label}: ${value}%`
+          const dataIndex = context.dataIndex
+          const call = sortedCalls.value[dataIndex]
+          
+          let tooltip = `${label}: ${value}%`
+          
+          // Add premium information
+          if (call?.mid) {
+            tooltip += `\nPremium: $${call.mid}`
+          } else if (call?.lastPrice) {
+            tooltip += `\nLast Price: $${call.lastPrice}`
+          }
+          
+          // Add return percentage if available
+          if (call?.returnPercent) {
+            tooltip += `\nReturn: ${call.returnPercent}%`
+          }
+          
+          // Add volume and open interest for context
+          if (call?.volume) {
+            tooltip += `\nVolume: ${call.volume.toLocaleString()}`
+          }
+          if (call?.openInterest) {
+            tooltip += `\nOpen Interest: ${call.openInterest.toLocaleString()}`
+          }
+          
+          // Add IV if available
+          if (call?.impliedVolatility) {
+            tooltip += `\nIV: ${(call.impliedVolatility * 100).toFixed(1)}%`
+          }
+          
+          return tooltip
         }
       }
     }
