@@ -128,29 +128,19 @@ const chartOptions = computed(() => ({
           
           let tooltip = `${label}: ${value}%`
           
-          // Add premium information
-          if (call?.mid) {
-            tooltip += `\nPremium: $${call.mid}`
-          } else if (call?.lastPrice) {
-            tooltip += `\nLast Price: $${call.lastPrice}`
-          }
-          
-          // Add return percentage if available
-          if (call?.returnPercent) {
-            tooltip += `\nReturn: ${call.returnPercent}%`
-          }
-          
-          // Add volume and open interest for context
-          if (call?.volume) {
-            tooltip += `\nVolume: ${call.volume.toLocaleString()}`
-          }
-          if (call?.openInterest) {
-            tooltip += `\nOpen Interest: ${call.openInterest.toLocaleString()}`
-          }
-          
-          // Add IV if available
-          if (call?.impliedVolatility) {
-            tooltip += `\nIV: ${(call.impliedVolatility * 100).toFixed(1)}%`
+          // Only show premium and annual yield for the first dataset (OTM %)
+          if (context.datasetIndex === 0) {
+            // Add premium information
+            if (call?.mid) {
+              tooltip += `\nPremium: $${call.mid}`
+            } else if (call?.lastPrice) {
+              tooltip += `\nLast Price: $${call.lastPrice}`
+            }
+            
+            // Add annual yield if available
+            if (call?.annualYield) {
+              tooltip += `\nAnnual Yield: ${call.annualYield}%`
+            }
           }
           
           return tooltip
