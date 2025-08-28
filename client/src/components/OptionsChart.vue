@@ -60,15 +60,15 @@ const chartData = computed(() => {
 
   // Prepare data points
   const strikes = []
-  const otmPercentages = []
+  const annualYields = []
   const assignmentProbabilities = []
 
   sortedCalls.value.forEach(call => {
     strikes.push(`$${call.strike}`)
     
-    // Calculate OTM percentage
-    const otmPercent = ((call.strike - props.currentPrice) / props.currentPrice) * 100
-    otmPercentages.push(otmPercent)
+    // Get annual yield
+    const annualYield = parseFloat(call.annualYield) || 0
+    annualYields.push(annualYield)
     
     // Get NN Assignment probability
     const assignmentProb = parseFloat(call.assignmentProbability) || 0
@@ -79,20 +79,20 @@ const chartData = computed(() => {
     labels: strikes,
     datasets: [
       {
-        label: 'OTM %',
-        data: otmPercentages,
-        borderColor: 'rgba(54, 162, 235, 1)',
-        backgroundColor: 'rgba(54, 162, 235, 0.1)',
+        label: 'NN Assignment %',
+        data: assignmentProbabilities,
+        borderColor: 'rgba(255, 99, 132, 1)',
+        backgroundColor: 'rgba(255, 99, 132, 0.1)',
         borderWidth: 2,
         fill: false,
         yAxisID: 'y',
         tension: 0.1
       },
       {
-        label: 'NN Assignment %',
-        data: assignmentProbabilities,
-        borderColor: 'rgba(255, 99, 132, 1)',
-        backgroundColor: 'rgba(255, 99, 132, 0.1)',
+        label: 'Annual Yield %',
+        data: annualYields,
+        borderColor: 'rgba(34, 197, 94, 1)',
+        backgroundColor: 'rgba(34, 197, 94, 0.1)',
         borderWidth: 2,
         fill: false,
         yAxisID: 'y1',
@@ -128,18 +128,13 @@ const chartOptions = computed(() => ({
           
           let tooltip = `${label}: ${value}%`
           
-          // Only show premium and annual yield for the first dataset (OTM %)
+          // Only show premium for the first dataset (NN Assignment %)
           if (context.datasetIndex === 0) {
             // Add premium information
             if (call?.mid) {
               tooltip += `\nPremium: $${call.mid}`
             } else if (call?.lastPrice) {
               tooltip += `\nLast Price: $${call.lastPrice}`
-            }
-            
-            // Add annual yield if available
-            if (call?.annualYield) {
-              tooltip += `\nAnnual Yield: ${call.annualYield}%`
             }
           }
           
@@ -162,11 +157,11 @@ const chartOptions = computed(() => ({
       position: 'left',
       title: {
         display: true,
-        text: 'OTM Percentage (%)',
-        color: 'rgba(54, 162, 235, 1)'
+        text: 'NN Assignment Probability (%)',
+        color: 'rgba(255, 99, 132, 1)'
       },
       ticks: {
-        color: 'rgba(54, 162, 235, 1)'
+        color: 'rgba(255, 99, 132, 1)'
       },
       grid: {
         drawOnChartArea: false,
@@ -180,11 +175,11 @@ const chartOptions = computed(() => ({
       position: 'right',
       title: {
         display: true,
-        text: 'NN Assignment Probability (%)',
-        color: 'rgba(255, 99, 132, 1)'
+        text: 'Annual Yield (%)',
+        color: 'rgba(34, 197, 94, 1)'
       },
       ticks: {
-        color: 'rgba(255, 99, 132, 1)'
+        color: 'rgba(34, 197, 94, 1)'
       },
       grid: {
         drawOnChartArea: true,
