@@ -171,6 +171,8 @@ const chartOptions = computed(() => ({
       grid: {
         drawOnChartArea: false,
       },
+      min: 0,
+      max: 100
     },
     y1: {
       type: 'linear',
