@@ -1,9 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-import StrikeAssignmentChart from './components/StrikeAssignmentChart.vue'
-import ProbabilityHistogram from './components/ProbabilityHistogram.vue'
-import ReturnRiskChart from './components/ReturnRiskChart.vue'
-import TimeDecayChart from './components/TimeDecayChart.vue'
+import OptionsChart from './components/OptionsChart.vue'
 
 const symbol = ref('AAPL')
 const loading = ref(false)
@@ -64,14 +61,12 @@ async function fetchAllOptions() {
 
       <!-- Charts Section -->
       <div class="charts-section">
-        <div class="charts-grid">
-          <StrikeAssignmentChart :optionsData="optionsData" />
-          <ProbabilityHistogram :optionsData="optionsData" />
-        </div>
-        <div class="charts-grid">
-          <ReturnRiskChart :optionsData="optionsData" />
-          <TimeDecayChart :optionsData="optionsData" />
-        </div>
+        <OptionsChart 
+          v-for="expiration in optionsData.expirations" 
+          :key="expiration.expiration"
+          :expirationData="expiration"
+          :currentPrice="optionsData.currentPrice"
+        />
       </div>
       
       <div v-for="expiration in optionsData.expirations" :key="expiration.expiration" class="expiration-section">
@@ -277,26 +272,9 @@ h1 {
   margin: 2rem 0;
 }
 
-.charts-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-@media (max-width: 1200px) {
-  .charts-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 768px) {
   .options-table-container {
     max-height: none;
-  }
-  
-  .charts-grid {
-    gap: 0.5rem;
   }
 }
 </style>
