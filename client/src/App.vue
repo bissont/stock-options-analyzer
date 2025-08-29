@@ -60,16 +60,6 @@ async function fetchAllOptions() {
         <p>All available options for all strikes and expiration dates</p>
       </div>
 
-      <!-- Charts Section -->
-      <div class="charts-section">
-        <OptionsChart 
-          v-for="expiration in optionsData.expirations" 
-          :key="expiration.expiration"
-          :expirationData="expiration"
-          :currentPrice="optionsData.currentPrice"
-        />
-      </div>
-      
       <div v-for="expiration in optionsData.expirations" :key="expiration.expiration" class="expiration-section">
         <h3>
           Expires {{ new Date(expiration.expiration * 1000).toLocaleDateString() }} 
@@ -110,6 +100,16 @@ async function fetchAllOptions() {
           </div>
           <div v-else class="no-data">No call options available</div>
         </div>
+      </div>
+
+      <!-- Charts Section -->
+      <div class="charts-section">
+        <OptionsChart 
+          v-for="expiration in optionsData.expirations" 
+          :key="expiration.expiration"
+          :expirationData="expiration"
+          :currentPrice="optionsData.currentPrice"
+        />
       </div>
     </section>
   </div>
