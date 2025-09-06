@@ -38,79 +38,150 @@ function normalCDF(x) {
   return 0.5 * (1.0 + sign * y);
 }
 
-function calculateDelta(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, optionType = 'call') {
+function calculateDelta(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, optionType = 'call', dividendYield = 0) {
   if (timeToExpiry <= 0) return optionType === 'call' ? (currentPrice > strikePrice ? 1 : 0) : (currentPrice < strikePrice ? -1 : 0);
-  
+
   const S = currentPrice;
   const K = strikePrice;
   const T = timeToExpiry;
   const r = riskFreeRate;
+  const q = dividendYield || 0;
   const sigma = volatility;
-  
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-  
+
+  const d1 = (Math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+
   if (optionType === 'call') {
-    return normalCDF(d1);
+    return Math.exp(-q * T) * normalCDF(d1);
   } else {
-    return normalCDF(d1) - 1;
+    return Math.exp(-q * T) * (normalCDF(d1) - 1);
   }
 }
 
-function calculateAssignmentProbability(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, marketDelta = null) {
-  if (timeToExpiry <= 0) return { 
+function calculateAssignmentProbability(currentPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, _marketDelta = null, dividendYield = 0) {
+  // This function now returns:
+  // - original: Black–Scholes probability without dividends (legacy)
+  // - enhanced: Black–Scholes probability with dividend yield q
+  if (timeToExpiry <= 0) return {
     original: strikePrice <= currentPrice ? 1 : 0,
     enhanced: strikePrice <= currentPrice ? 1 : 0
   };
-  
+
   const S = currentPrice;
   const K = strikePrice;
   const T = timeToExpiry;
   const r = riskFreeRate;
+  const q = dividendYield || 0;
   const sigma = volatility;
-  
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+
+  // Legacy original (q = 0)
+  const d1_legacy = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+  const d2_legacy = d1_legacy - sigma * Math.sqrt(T);
+  const originalProb = normalCDF(d2_legacy);
+
+  // Dividend-aware BS
+  const d1 = (Math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
   const d2 = d1 - sigma * Math.sqrt(T);
-  
-  // Original Black-Scholes probability
-  const originalProb = normalCDF(d2);
-  
-  // Enhanced probability with market corrections
-  let enhancedProb = originalProb;
-  
-  // 1. Delta-based probability adjustment (if market delta is available)
-  if (marketDelta !== null && marketDelta !== undefined) {
-    // For calls: delta approximates ITM probability
-    const deltaProb = Math.abs(marketDelta);
-    // Weighted combination: 70% BS, 30% market delta
-    enhancedProb = (originalProb * 0.7) + (deltaProb * 0.3);
+  const enhancedProb = normalCDF(d2);
+
+  return { original: originalProb, enhanced: enhancedProb };
+}
+
+// Compute mid price helper
+function midPrice(opt) {
+  const bid = Number(opt?.bid) || 0;
+  const ask = Number(opt?.ask) || 0;
+  const last = Number(opt?.lastPrice) || 0;
+  if (bid > 0 && ask > 0) return (bid + ask) / 2;
+  if (last > 0) return last;
+  if (bid > 0) return bid;
+  if (ask > 0) return ask;
+  return 0;
+}
+
+// Estimate dividend yield q from put–call parity at near-ATM strike
+function estimateDividendYieldFromParity(S, r, T, calls, puts) {
+  try {
+    if (!Array.isArray(calls) || !Array.isArray(puts) || calls.length === 0 || puts.length === 0) return null;
+    const callsSorted = [...calls].filter(c => c && Number.isFinite(c.strike)).sort((a, b) => a.strike - b.strike);
+    const putsSorted = [...puts].filter(p => p && Number.isFinite(p.strike)).sort((a, b) => a.strike - b.strike);
+    let best = null;
+    for (const c of callsSorted) {
+      // find matching put by strike
+      const p = putsSorted.find(pp => Math.abs(pp.strike - c.strike) < 1e-6);
+      if (!p) continue;
+      const K = c.strike;
+      const C = midPrice(c);
+      const P = midPrice(p);
+      if (!(C > 0 && P >= 0)) continue;
+      const numerator = C - P + K * Math.exp(-r * T);
+      if (numerator <= 0) continue;
+      const ratio = numerator / S;
+      if (!(ratio > 0)) continue;
+      const q = - (1 / T) * Math.log(ratio);
+      const moneyness = Math.abs(S - K) / S;
+      if (!Number.isFinite(q)) continue;
+      if (!best || moneyness < best.moneyness) best = { q, moneyness };
+    }
+    return best ? Math.max(0, Math.min(1, best.q)) : null;
+  } catch {
+    return null;
   }
-  
-  // 2. Implied volatility adjustment
-  const defaultVol = 0.25; // 25% baseline volatility
-  const volAdjustment = Math.min(2.0, Math.max(0.5, sigma / defaultVol)); // Cap between 0.5x and 2x
-  enhancedProb = enhancedProb * volAdjustment;
-  
-  // 3. Time decay acceleration for very short-term options
-  if (T < (7/365)) { // Less than 1 week
-    const timeAcceleration = 1 + (0.1 * (7/365 - T) / (7/365)); // Up to 10% increase
-    enhancedProb = enhancedProb * timeAcceleration;
+}
+
+// Risk-neutral probability via digital approximation from call surface
+function estimateRiskNeutralProbFromCalls(callsSortedAsc, idx, r, T) {
+  try {
+    if (!Array.isArray(callsSortedAsc) || callsSortedAsc.length < 3) return null;
+    if (idx <= 0 || idx >= callsSortedAsc.length - 1) return null;
+    const cMinus = callsSortedAsc[idx - 1];
+    const c = callsSortedAsc[idx];
+    const cPlus = callsSortedAsc[idx + 1];
+    const Kminus = cMinus.strike;
+    const Kplus = cPlus.strike;
+    const Cminus = midPrice(cMinus);
+    const Cplus = midPrice(cPlus);
+    const dK = Kplus - Kminus;
+    if (!(dK > 0)) return null;
+    const digital = (Cminus - Cplus) / dK; // ∂C/∂K ≈ -e^{-rT} P(S_T > K)
+    const prob = Math.exp(r * T) * Math.max(0, Math.min(1, digital));
+    if (!Number.isFinite(prob)) return null;
+    return Math.max(0, Math.min(1, prob));
+  } catch {
+    return null;
   }
-  
-  // 4. Moneyness adjustment
-  const moneyness = S / K;
-  if (moneyness > 1.05) { // More than 5% ITM
-    enhancedProb = enhancedProb * 1.1; // Increase probability
-  } else if (moneyness > 0.95 && moneyness <= 1.05) { // Near the money
-    enhancedProb = enhancedProb * 1.05; // Slight increase
+}
+
+// Early assignment probability approximation for calls around ex-div
+function estimateEarlyAssignmentProbabilityCall(S, K, T_to_expiry, T_to_exdiv, r, expectedDividend, callMid, bsProbITMAtExDiv) {
+  try {
+    if (!(T_to_exdiv > 0) || !(T_to_exdiv < T_to_expiry) || !(expectedDividend > 0)) return 0;
+    const intrinsic = Math.max(S - K, 0);
+    const extrinsic = Math.max(callMid - intrinsic, 0);
+    const pvDiv = expectedDividend * Math.exp(-r * T_to_exdiv);
+    // Logistic gating on (pvDiv - extrinsic)
+    const x = pvDiv - extrinsic;
+    const scale = Math.max(0.05, 0.25); // in $; conservative scale
+    const logistic = 1 / (1 + Math.exp(-x / scale));
+    const p_early = logistic * bsProbITMAtExDiv;
+    return Math.max(0, Math.min(1, p_early));
+  } catch {
+    return 0;
   }
-  
-  // Ensure probability stays between 0 and 1
-  enhancedProb = Math.max(0, Math.min(1, enhancedProb));
-  
-  return {
-    original: originalProb,
-    enhanced: enhancedProb
-  };
+}
+
+async function getDividendInfo(symbol) {
+  try {
+    const data = await yf.quoteSummary(symbol, { modules: ['summaryDetail', 'calendarEvents'] });
+    const yieldRaw = data?.summaryDetail?.dividendYield;
+    const dividendRate = data?.summaryDetail?.dividendRate; // annual amount
+    const exDivRaw = data?.calendarEvents?.exDividendDate || data?.summaryDetail?.exDividendDate;
+    const exDividendDate = exDivRaw ? new Date(exDivRaw) : null;
+    const dividendYield = Number(yieldRaw) || null; // already decimal (e.g., 0.02)
+    const dividendRateAnnual = Number(dividendRate) || null;
+    return { dividendYield, dividendRateAnnual, exDividendDate };
+  } catch {
+    return { dividendYield: null, dividendRateAnnual: null, exDividendDate: null };
+  }
 }
 
 function calculateGoalBasedScore(premium, assignmentProbability, strike, currentPrice, daysToExpiry) {
@@ -224,6 +295,9 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
     const expirations = base?.expirationDates || [];
     if (!expirations.length) return res.status(404).json({ error: 'No expirations available' });
 
+    // Fetch dividend info once
+    const divInfo = await getDividendInfo(symbol);
+
     // Sort all expirations chronologically
     const sortedExpirations = expirations.sort((a, b) => a.getTime() - b.getTime());
     
@@ -259,47 +333,68 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
       const opt = chain?.options?.[0];
       if (!opt) continue;
       
+      // Common variables for this expiration
+      const timeToExpiry = (target.getTime() - Date.now()) / (1000 * 3600 * 24 * 365); // Years
+      const daysToExpiry = (target.getTime() - Date.now()) / (1000 * 3600 * 24); // Days
+      const riskFreeRate = 0.045;
+      // Estimate dividend yield q: prefer summaryDetail, else parity
+      let dividendYield = divInfo.dividendYield;
+      if (dividendYield == null) {
+        const qParity = estimateDividendYieldFromParity(currentPrice, riskFreeRate, timeToExpiry, opt.calls || [], opt.puts || []);
+        if (qParity != null) dividendYield = qParity;
+      }
+      dividendYield = dividendYield || 0;
+
+      const callsSorted = (opt.calls || []).filter(c => Number.isFinite(c?.strike)).sort((a, b) => a.strike - b.strike);
+
       const mapOption = (o) => {
-        const timeToExpiry = (target.getTime() - Date.now()) / (1000 * 3600 * 24 * 365); // Years
-        const daysToExpiry = (target.getTime() - Date.now()) / (1000 * 3600 * 24); // Days
-        const riskFreeRate = 0.045; // Approximate current 10-year treasury rate
-        const volatility = o.impliedVolatility || 0.25; // Use option's IV or default to 25%
-        
-        // Calculate theoretical delta for market comparison
-        const theoreticalDelta = calculateDelta(currentPrice, o.strike, timeToExpiry, riskFreeRate, volatility, 'call');
-        
-        // Get assignment probabilities (both original and enhanced)
-        const assignmentProbs = calculateAssignmentProbability(
-          currentPrice, 
-          o.strike, 
-          timeToExpiry, 
-          riskFreeRate, 
-          volatility,
-          theoreticalDelta // Use calculated delta as market delta approximation
-        );
-        
-        const premium = (o.bid && o.ask) ? (o.bid + o.ask) / 2 : (o.lastPrice || 0); // Midpoint or last price
-        const returnPercent = premium > 0 ? ((premium / currentPrice) * 100).toFixed(3) : '0.000'; // Return as % of stock price
-        
-        // Use enhanced probability for goal scoring
-        const goalScore = calculateGoalBasedScore(premium, assignmentProbs.enhanced * 100, o.strike, currentPrice, daysToExpiry);
-        
-        // Calculate return/assignment ratio for both methods
-        const originalRatio = premium > 0 && assignmentProbs.original > 0 ? 
-          (((premium / currentPrice) * 100) / (assignmentProbs.original * 100)).toFixed(3) : 'N/A';
-        const enhancedRatio = premium > 0 && assignmentProbs.enhanced > 0 ? 
-          (((premium / currentPrice) * 100) / (assignmentProbs.enhanced * 100)).toFixed(3) : 'N/A';
-        
-        // Weekly vs bi-weekly target check  
+        const iv = o.impliedVolatility || 0.25;
+        const K = o.strike;
+        const premium = midPrice(o);
+
+        // Delta with dividends
+        const theoreticalDelta = calculateDelta(currentPrice, K, timeToExpiry, riskFreeRate, iv, 'call', dividendYield);
+
+        // BS probabilities
+        const probsBS = calculateAssignmentProbability(currentPrice, K, timeToExpiry, riskFreeRate, iv, null, dividendYield);
+
+        // Digital approximation
+        const idx = callsSorted.findIndex(c => Math.abs(c.strike - K) < 1e-9);
+        const digitalProb = estimateRiskNeutralProbFromCalls(callsSorted, idx, riskFreeRate, timeToExpiry);
+        const chosenProb = (digitalProb != null) ? digitalProb : probsBS.enhanced;
+
+        // Early assignment handling (ex-div before expiry)
+        let finalProb = chosenProb;
+        let earlyProb = 0;
+        const exDivDate = divInfo.exDividendDate;
+        let earlyNote = '';
+        if (exDivDate && exDivDate.getTime() > Date.now() && exDivDate.getTime() < target.getTime()) {
+          const T_ex = (exDivDate.getTime() - Date.now()) / (1000 * 3600 * 24 * 365);
+          const bsAtExDiv = calculateAssignmentProbability(currentPrice, K, T_ex, riskFreeRate, iv, null, dividendYield);
+          const expectedDividend = divInfo.dividendRateAnnual ? (divInfo.dividendRateAnnual / 4) : 0; // approx quarterly
+          const pEarly = estimateEarlyAssignmentProbabilityCall(
+            currentPrice, K, timeToExpiry, T_ex, riskFreeRate, expectedDividend, premium, bsAtExDiv.enhanced
+          );
+          earlyProb = pEarly;
+          finalProb = pEarly + (1 - pEarly) * chosenProb;
+          if (pEarly > 0.01) earlyNote = ' (ex-div early risk)';
+        }
+
+        const returnPercentStr = premium > 0 ? ((premium / currentPrice) * 100).toFixed(3) : '0.000';
+        const goalScore = calculateGoalBasedScore(premium, finalProb * 100, K, currentPrice, daysToExpiry);
+
+        const originalRatio = premium > 0 && probsBS.original > 0 ? (((premium / currentPrice) * 100) / (probsBS.original * 100)).toFixed(3) : 'N/A';
+        const enhancedRatio = premium > 0 && finalProb > 0 ? (((premium / currentPrice) * 100) / (finalProb * 100)).toFixed(3) : 'N/A';
+
         const weeklyReturn = premium > 0 ? (premium / currentPrice) * 100 : 0;
         const meetsWeeklyTarget = daysToExpiry <= 8 && weeklyReturn >= 0.1;
         const meetsBiweeklyTarget = daysToExpiry <= 16 && weeklyReturn >= 0.2;
         const meetsTarget = meetsWeeklyTarget || meetsBiweeklyTarget;
         const targetType = meetsWeeklyTarget ? 'weekly' : (meetsBiweeklyTarget ? 'bi-weekly' : 'none');
-        
+
         return {
           contractSymbol: o.contractSymbol,
-          strike: o.strike,
+          strike: K,
           lastPrice: o.lastPrice,
           bid: o.bid,
           ask: o.ask,
@@ -309,18 +404,19 @@ app.get('/api/options-weeks/:symbol', async (req, res) => {
           openInterest: o.openInterest,
           impliedVolatility: o.impliedVolatility,
           inTheMoney: o.inTheMoney,
-          otmPercent: ((o.strike - currentPrice) / currentPrice * 100).toFixed(2),
-          assignmentProbability: (assignmentProbs.original * 100).toFixed(1), // Original BS probability
-          assignmentProbabilityEnhanced: (assignmentProbs.enhanced * 100).toFixed(1), // Enhanced probability
-          delta: (theoreticalDelta * 100).toFixed(1), // Theoretical delta
+          otmPercent: ((K - currentPrice) / currentPrice * 100).toFixed(2),
+          assignmentProbability: (probsBS.original * 100).toFixed(1),
+          assignmentProbabilityEnhanced: (finalProb * 100).toFixed(1),
+          delta: (theoreticalDelta * 100).toFixed(1),
           premium: premium.toFixed(2),
-          returnPercent: returnPercent,
+          returnPercent: returnPercentStr,
           goalScore: goalScore > 0 ? goalScore.toFixed(3) : enhancedRatio,
-          returnAssignmentRatio: originalRatio, // Original ratio
-          returnAssignmentRatioEnhanced: enhancedRatio, // Enhanced ratio
+          returnAssignmentRatio: originalRatio,
+          returnAssignmentRatioEnhanced: enhancedRatio,
           meetsTarget: meetsTarget,
           targetType: targetType,
-          daysToExpiry: Math.round(daysToExpiry)
+          daysToExpiry: Math.round(daysToExpiry),
+          notes: earlyNote
         };
       };
 
@@ -817,6 +913,7 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
     const otmHigh = currentPrice * 2.0; // Expand to 100% OTM to get more strikes
     
     const weeksData = [];
+    const divInfo = await getDividendInfo(symbol);
     
     for (const expDate of futureExpirations) {
       try {
@@ -826,6 +923,15 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
         
         const daysToExpiry = (expDate.getTime() - Date.now()) / (1000 * 3600 * 24);
         const timeToExpiry = daysToExpiry / 365.0;
+        const riskFreeRate = 0.045;
+        let dividendYield = divInfo.dividendYield;
+        if (dividendYield == null) {
+          const qParity = estimateDividendYieldFromParity(currentPrice, riskFreeRate, timeToExpiry, opt.calls || [], opt.puts || []);
+          if (qParity != null) dividendYield = qParity;
+        }
+        dividendYield = dividendYield || 0;
+
+        const callsSorted = (opt.calls || []).filter(c => Number.isFinite(c?.strike)).sort((a, b) => a.strike - b.strike);
         
         // Check if this expiration is in optimal DTE range (expanded to include 40s)
         const isOptimalDTE = daysToExpiry >= 30 && daysToExpiry <= 49;
@@ -851,17 +957,25 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
           .slice(0, 15); // Take only 15 closest OTM strikes
           
         for (const call of otmCalls) {
-          const bid = call.bid || 0;
-          const ask = call.ask || 0;
-          const lastPrice = call.lastPrice || 0;
-          
-          // Use best available price data
-          const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (lastPrice > 0 ? lastPrice : 0.01);
-          
+          const mid = midPrice(call) || 0.01;
           const iv = call.impliedVolatility || 0.25;
-          const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
-          const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
-          
+          const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, riskFreeRate, iv, 'call', dividendYield);
+          const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, riskFreeRate, iv, null, dividendYield);
+
+          // Model-free probability via digital approximation
+          const idx = callsSorted.findIndex(c => Math.abs(c.strike - call.strike) < 1e-9);
+          const digitalProb = estimateRiskNeutralProbFromCalls(callsSorted, idx, riskFreeRate, timeToExpiry);
+          let baseProb = (digitalProb != null) ? digitalProb : bsProbs.enhanced;
+
+          // Early assignment risk if ex-div before expiration
+          if (divInfo.exDividendDate && divInfo.exDividendDate.getTime() > Date.now() && divInfo.exDividendDate.getTime() < expDate.getTime()) {
+            const T_ex = (divInfo.exDividendDate.getTime() - Date.now()) / (1000 * 3600 * 24 * 365);
+            const bsAtEx = calculateAssignmentProbability(currentPrice, call.strike, T_ex, riskFreeRate, iv, null, dividendYield);
+            const expectedDividend = divInfo.dividendRateAnnual ? (divInfo.dividendRateAnnual / 4) : 0;
+            const pEarly = estimateEarlyAssignmentProbabilityCall(currentPrice, call.strike, timeToExpiry, T_ex, riskFreeRate, expectedDividend, mid, bsAtEx.enhanced);
+            baseProb = pEarly + (1 - pEarly) * baseProb;
+          }
+
           // Get RF prediction
           const features = [
             currentPrice / call.strike, // moneyness
@@ -870,10 +984,10 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
             delta,
             (call.strike - currentPrice) / currentPrice, // otm percent
             (call.volume || 0) / 1_000_000, // volume in millions
-            bsProbs.enhanced
+            baseProb
           ];
           
-          let rfProb = bsProbs.enhanced;
+          let rfProb = baseProb;
           try {
             rfProb = Math.max(0, Math.min(1, model.predict([features])[0]));
           } catch (e) {
@@ -881,7 +995,7 @@ app.get('/api/analyze-rf/:symbol', async (req, res) => {
           }
           
           // Blended probability: RF + BS with market adjustments
-          let blendedProb = (rfProb * 0.7) + (bsProbs.enhanced * 0.3); // 70% RF, 30% enhanced BS
+          let blendedProb = (rfProb * 0.7) + (baseProb * 0.3); // 70% RF, 30% base prob
           
           // Add market adjustments
           const borrowFee = 0.0; // Default to 0 for now
