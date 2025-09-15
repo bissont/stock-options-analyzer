@@ -1330,6 +1330,10 @@ app.get('/api/all-options/:symbol', async (req, res) => {
             const mid = (bid + ask) / 2;
             const premium = mid > 0 ? mid : (call.lastPrice || 0);
             
+            // Calculate intrinsic and extrinsic values for calls
+            const intrinsic = Math.max(currentPrice - call.strike, 0);
+            const extrinsic = Math.max(premium - intrinsic, 0);
+            
             // Calculate OTM percentage
             const otmPercent = ((call.strike - currentPrice) / currentPrice * 100).toFixed(2);
             
@@ -1400,6 +1404,8 @@ app.get('/api/all-options/:symbol', async (req, res) => {
               contractSymbol: call.contractSymbol,
               strike: call.strike,
               mid: mid > 0 ? mid.toFixed(2) : (call.lastPrice || 0).toFixed(2),
+              intrinsic: intrinsic.toFixed(2),
+              extrinsic: extrinsic.toFixed(2),
               volume: call.volume,
               openInterest: call.openInterest,
               impliedVolatility: call.impliedVolatility,

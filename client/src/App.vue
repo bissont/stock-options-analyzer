@@ -77,6 +77,8 @@ async function fetchAllOptions() {
                 <tr>
                   <th>Strike</th>
                   <th>Mid</th>
+                  <th>Intrinsic</th>
+                  <th>Extrinsic</th>
                   <th>OTM %</th>
                   <th>Return %</th>
                   <th>Annual Yield</th>
@@ -90,6 +92,8 @@ async function fetchAllOptions() {
                 <tr v-for="call in expiration.calls" :key="call.contractSymbol">
                   <td>${{ call.strike }}</td>
                   <td>${{ call.mid || '--' }}</td>
+                  <td>${{ call.intrinsic || '0.00' }}</td>
+                  <td>${{ call.extrinsic || (call.mid ? (Math.max(parseFloat(call.mid) - Math.max(optionsData.currentPrice - call.strike, 0), 0)).toFixed(2) : '0.00') }}</td>
                   <td>{{ call.otmPercent || '--' }}%</td>
                   <td>{{ call.returnPercent || '--' }}%</td>
                   <td>{{ call.annualYield || '--' }}%</td>
