@@ -1375,22 +1375,8 @@ app.get('/api/all-options/:symbol', async (req, res) => {
             };
           });
 
-        // Ensure probabilities are non-increasing with strike within the same expiration
-        // Sort first by strike, then enforce monotonicity
-        const callsSortedByStrike = [...calls].sort((a, b) => a.strike - b.strike);
-        let prev = Number.POSITIVE_INFINITY;
-        for (const c of callsSortedByStrike) {
-          const p = parseFloat(c.assignmentProbability);
-          if (Number.isFinite(p)) {
-            const adjusted = Math.min(p, prev);
-            c.assignmentProbability = adjusted.toFixed(1);
-            prev = adjusted;
-          }
-        }
-
-
-        // Use the monotone-smoothed, strike-sorted array
-        const finalCalls = callsSortedByStrike;
+        // Sort calls by strike only (no adjustments to probability)
+        const finalCalls = [...calls].sort((a, b) => a.strike - b.strike);
 
         results.push({
           expiration: Math.floor((opt.expirationDate?.getTime?.() || expDate.getTime()) / 1000),
