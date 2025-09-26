@@ -1348,58 +1348,15 @@ app.get('/api/all-options/:symbol', async (req, res) => {
             const annualYield = returnPercent > 0 ? 
               (parseFloat(returnPercent) * (12 / months)).toFixed(1) : '0.0';
             
-            // Calculate Neural Network assignment probability
+            // Calculate assignment probability (use pure Black-Scholes original probability for stability)
             let assignmentProbability = '0.0';
-            if (neuralNet && premium > 0) {
-              try {
-                const iv = call.impliedVolatility || 0.25;
-                
-                // Use neural network prediction with historical context
-                const neuralProb = neuralNet.predict(
-                  currentPrice, 
-                  call.strike, 
-                  timeToExpiry, 
-                  daysToExpiry, 
-                  iv, 
-                  call.volume || 0, 
-                  bid, 
-                  ask, 
-                  call.openInterest || 0,
-                  historicalData
-                );
-                
-                // Calculate Black-Scholes as fallback/blend
-                const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
-                const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
-                
-                // Ensemble: 50% Neural Network + 50% Enhanced Black-Scholes
-                let blendedProb = (neuralProb * 0.5) + (bsProbs.enhanced * 0.5);
-                blendedProb = Math.max(0, Math.min(1, blendedProb));
-                
-                assignmentProbability = (blendedProb * 100).toFixed(1);
-              } catch (e) {
-                console.warn(`Error calculating neural assignment probability for ${call.strike}: ${e.message}`);
-                
-                // Fallback to enhanced Black-Scholes if neural network fails
-                try {
-                  const iv = call.impliedVolatility || 0.25;
-                  const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
-                  const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
-                  assignmentProbability = (bsProbs.enhanced * 100).toFixed(1);
-                } catch (fallbackError) {
-                  console.warn(`Fallback BS calculation also failed for ${call.strike}:`, fallbackError.message);
-                }
-              }
-            } else if (premium > 0) {
-              // Fallback to Black-Scholes if no neural network
-              try {
-                const iv = call.impliedVolatility || 0.25;
-                const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
-                const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
-                assignmentProbability = (bsProbs.enhanced * 100).toFixed(1);
-              } catch (e) {
-                console.warn(`Fallback BS calculation failed for ${call.strike}:`, e.message);
-              }
+            try {
+              const iv = call.impliedVolatility || 0.25;
+              const delta = calculateDelta(currentPrice, call.strike, timeToExpiry, 0.045, iv);
+              const bsProbs = calculateAssignmentProbability(currentPrice, call.strike, timeToExpiry, 0.045, iv, delta);
+              assignmentProbability = (bsProbs.original * 100).toFixed(1);
+            } catch (e) {
+              console.warn(`BS calculation failed for ${call.strike}:`, e.message);
             }
 
             return {
@@ -1417,6 +1374,20 @@ app.get('/api/all-options/:symbol', async (req, res) => {
               assignmentProbability: assignmentProbability
             };
           });
+
+        // Ensure probabilities are non-increasing with strike within the same expiration
+        // Sort first by strike, then enforce monotonicity
+        const callsSortedByStrike = [...calls].sort((a, b) => a.strike - b.strike);
+        let prev = Number.POSITIVE_INFINITY;
+        for (const c of callsSortedByStrike) {
+          const p = parseFloat(c.assignmentProbability);
+          if (Number.isFinite(p)) {
+            const adjusted = Math.min(p, prev);
+            c.assignmentProbability = adjusted.toFixed(1);
+            prev = adjusted;
+          }
+        }
+
 
         // Sort calls by strike price
         calls.sort((a, b) => a.strike - b.strike);

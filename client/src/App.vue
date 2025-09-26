@@ -77,7 +77,7 @@ async function fetchAllOptions() {
                   <th>OTM %</th>
                   <th>Return %</th>
                   <th>Annual Yield</th>
-                  <th>NN Assign %</th>
+                  <th>Assign %</th>
                   <th>Volume</th>
                   <th>OI</th>
                   <th>IV</th>
