@@ -1389,12 +1389,12 @@ app.get('/api/all-options/:symbol', async (req, res) => {
         }
 
 
-        // Sort calls by strike price
-        calls.sort((a, b) => a.strike - b.strike);
+        // Use the monotone-smoothed, strike-sorted array
+        const finalCalls = callsSortedByStrike;
 
         results.push({
           expiration: Math.floor((opt.expirationDate?.getTime?.() || expDate.getTime()) / 1000),
-          calls: calls
+          calls: finalCalls
         });
 
       } catch (e) {

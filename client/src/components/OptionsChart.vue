@@ -79,7 +79,7 @@ const chartData = computed(() => {
     labels: strikes,
     datasets: [
       {
-        label: 'NN Assignment %',
+        label: 'Assign %',
         data: assignmentProbabilities,
         borderColor: 'rgba(255, 99, 132, 1)',
         backgroundColor: 'rgba(255, 99, 132, 0.1)',
@@ -155,7 +155,7 @@ const chartOptions = computed(() => ({
       position: 'left',
       title: {
         display: true,
-        text: 'NN Assignment Probability (%)',
+        text: 'Assignment Probability (%)',
         color: 'rgba(255, 99, 132, 1)'
       },
       ticks: {
