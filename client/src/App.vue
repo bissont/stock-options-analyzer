@@ -73,7 +73,7 @@ async function fetchAllOptions() {
               <thead>
                 <tr>
                   <th>Strike</th>
-                  <th>Mid</th>
+                  <th>Last</th>
                   <th>OTM %</th>
                   <th>Return %</th>
                   <th>Annual Yield</th>
@@ -86,7 +86,7 @@ async function fetchAllOptions() {
               <tbody>
                 <tr v-for="call in expiration.calls" :key="call.contractSymbol">
                   <td>${{ call.strike }}</td>
-                  <td>${{ call.mid || '--' }}</td>
+                  <td>${{ call.last || '--' }}</td>
                   <td>{{ call.otmPercent || '--' }}%</td>
                   <td>{{ call.returnPercent || '--' }}%</td>
                   <td>{{ call.annualYield || '--' }}%</td>

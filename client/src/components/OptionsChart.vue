@@ -128,13 +128,11 @@ const chartOptions = computed(() => ({
           
           let tooltip = `${label}: ${value}%`
           
-          // Only show premium for the first dataset (NN Assignment %)
+          // Only show last price for the first dataset (NN Assignment %)
           if (context.datasetIndex === 0) {
-            // Add premium information
-            if (call?.mid) {
-              tooltip += `\nPremium: $${call.mid}`
-            } else if (call?.lastPrice) {
-              tooltip += `\nLast Price: $${call.lastPrice}`
+            // Add last traded price information
+            if (call?.last) {
+              tooltip += `\nLast: $${call.last}`
             }
           }
           

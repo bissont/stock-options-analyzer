@@ -1328,7 +1328,9 @@ app.get('/api/all-options/:symbol', async (req, res) => {
             const bid = call.bid || 0;
             const ask = call.ask || 0;
             const mid = (bid + ask) / 2;
-            const premium = mid > 0 ? mid : (call.lastPrice || 0);
+            // Use last traded price as primary premium; fallback to mid
+            const last = (call.lastPrice || 0);
+            const premium = (last > 0 ? last : (mid || 0));
             
             // Calculate intrinsic and extrinsic values for calls
             const intrinsic = Math.max(currentPrice - call.strike, 0);
@@ -1403,7 +1405,7 @@ app.get('/api/all-options/:symbol', async (req, res) => {
             return {
               contractSymbol: call.contractSymbol,
               strike: call.strike,
-              mid: mid > 0 ? mid.toFixed(2) : (call.lastPrice || 0).toFixed(2),
+              last: (last > 0 ? last : 0).toFixed(2),
               intrinsic: intrinsic.toFixed(2),
               extrinsic: extrinsic.toFixed(2),
               volume: call.volume,
