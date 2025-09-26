@@ -60,10 +60,7 @@ async function fetchAllOptions() {
         <p>All available options for all strikes and expiration dates</p>
       </div>
 
-      <div v-for="expiration in optionsData.expirations.filter(exp => {
-        const dte = Math.round((exp.expiration * 1000 - Date.now()) / (1000 * 3600 * 24))
-        return dte >= 15 && dte <= 90
-      })" :key="expiration.expiration" class="expiration-section">
+      <div v-for="expiration in optionsData.expirations" :key="expiration.expiration" class="expiration-section">
         <h3>
           Expires {{ new Date(expiration.expiration * 1000).toLocaleDateString() }} 
           ({{ Math.round((expiration.expiration * 1000 - Date.now()) / (1000 * 3600 * 24)) }} DTE)
@@ -108,10 +105,7 @@ async function fetchAllOptions() {
       <!-- Charts Section -->
       <div class="charts-section">
         <OptionsChart 
-          v-for="expiration in optionsData.expirations.filter(exp => {
-            const dte = Math.round((exp.expiration * 1000 - Date.now()) / (1000 * 3600 * 24))
-            return dte >= 15 && dte <= 90
-          })" 
+          v-for="expiration in optionsData.expirations" 
           :key="expiration.expiration"
           :expirationData="expiration"
           :currentPrice="optionsData.currentPrice"
